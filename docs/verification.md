@@ -673,3 +673,11 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
   - `VERSIONINFO`：ProductName/FileDescription/FileVersion/CompanyName/LegalCopyright（版本取自 `CARGO_PKG_VERSION`，随发布版本自动更新）。
 - 验证：`Icon.ExtractAssociatedIcon` = 32×32 橙色 logo；`VersionInfo` 显示 `NeoSonia / NeoSonia 桌面 AI Agent / 0.9.0`；重装后安装目录 exe 同样带图标与版本信息。
 - 附带产物：`dist\NeoSonia-0.9.0-win64.zip`（便携版，含新图标 exe）。
+
+## v0.9.6 人设编辑正文滚动修复
+
+- 现象：人设编辑/新建时正文区滚不动；第一次"内部滚动容器"方案反而导致"字不滚、框滚"。
+- 根因：人设页滚动容器里的编辑器卡片是 flex 子项，默认 `flex-shrink:1` 被压到视口高度 → `content_height == viewport` → `scroll_y` 不生效（与邮件列表同一类问题）。正文 `text_area` 本身会随内容长高，被压缩后文字与框的相对关系错乱。
+- 修复：撤销正文内部滚动容器；给编辑器卡片加 `.min_h(0).shrink0()`，让页面级 `scroll_y` 真正生效——字和框一起随页面滚动。
+- 回归测试 `persona_editor_page_scrolls_long_body`：编辑器卡片高 > 视口、正文区不被压缩、页面可滚、鼠标停在正文可见区域时滚轮命中页面滚动容器、滚动后正文上移。
+- `cargo test -p neosonia-app` **74 passed**。

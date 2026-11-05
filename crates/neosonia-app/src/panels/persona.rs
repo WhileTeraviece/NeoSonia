@@ -295,14 +295,6 @@ fn persona_editor(st: &AppState, c: &UiColors, edit: &PersonaEditState) -> Eleme
     // 会被输入框吃掉、外层页面滚不动（用户报"人设正文处无法滚动"）。
     // 用固定高度的滚动容器包住它，正文超出 420px 后滚轮在正文上也能滚动。
     let body_area = body_area.w_full().mono();
-    let body_area: Element<Msg> = col()
-        .w_full()
-        .h(420.0)
-        .min_h(0.0)
-        .scroll_y()
-        .id("persona-edit-body-scroll")
-        .children((body_area,))
-        .into();
 
     let builtin = !edit.is_new && builtin_persona_id(&edit.id);
     let can_delete = !edit.is_new && !builtin;
@@ -409,6 +401,8 @@ fn persona_editor(st: &AppState, c: &UiColors, edit: &PersonaEditState) -> Eleme
 
     col()
         .w_full()
+        .min_h(0.0)
+        .shrink0()
         .p(space::LG)
         .gap(space::MD)
         .bg(c.surface_raised)
@@ -671,10 +665,12 @@ mod tests {
         assert_eq!(display_name("", "analyst"), "analyst");
         assert_eq!(display_name("", "   "), "未命名人设");
     }
-    /// 正文编辑区必须有固定高度 + 内部滚动：否则长提示词把编辑卡撑高、鼠标停在
-    /// 正文上滚轮无效（用户报"人设正文处无法滚动"）。
+    /// 编辑器页必须真的能滚动：滚动容器里的 flex 子项默认 flex-shrink:1，
+    /// 卡片会被压到视口高度 → content_height == viewport → scroll_y 不生效
+    /// （用户报"人设正文处无法滚动"的根因）。这里断言 editor 卡片不被压缩、
+    /// 页面可滚、滚轮命中页面滚动容器、滚动后正文上移（字和框一起滚）。
     #[test]
-    fn persona_body_area_scrolls_when_body_is_long() {
+    fn persona_editor_page_scrolls_long_body() {
         use neosonia_core::config::{Paths, Settings};
         let mut st = AppState::new(
             Paths::from_root("C:/tmp/neosonia-persona-layout"),
@@ -686,7 +682,7 @@ mod tests {
             name: "测试人设".into(),
             description: "长正文滚动测试".into(),
             body: (0..150)
-                .map(|i| format!("第 {i} 行：这是一段用于测试人设正文滚动区域的人设提示词内容。"))
+                .map(|i| format!("第 {i} 行：这是一段用于测试人设正文滚动区域的系统提示词内容。"))
                 .collect::<Vec<_>>()
                 .join("\n"),
             error: String::new(),
@@ -698,21 +694,33 @@ mod tests {
 
         let root = view(&st, &c);
         let frame = build_frame(&root, &theme, &mut fonts, &mut state, (424.0, 760.0), 1.0);
-        let scroll = frame.get(&by::id("persona-edit-body-scroll"));
+        let page = frame.get(&by::id(PANEL_ID));
+        let editor = frame.get(&by::id("persona-editor"));
         let body = frame.get(&by::id("persona-edit-body"));
         assert!(
-            body.rect.height() > scroll.rect.height(),
-            "正文内容({:.1}) 应高于滚动视口({:.1})",
-            body.rect.height(),
-            scroll.rect.height()
+            editor.rect.height() > page.rect.height(),
+            "编辑器卡片({:.1}) 应高于视口({:.1})，否则 scroll_y 不生效",
+            editor.rect.height(),
+            page.rect.height()
         );
-        assert!(frame.is_scrollable(scroll.id), "正文滚动容器应可滚动");
+        assert!(
+            body.rect.height() > 300.0,
+            "正文编辑区应保持完整高度（不被压缩），实际 {:.1}",
+            body.rect.height()
+        );
+        assert!(frame.is_scrollable(page.id), "人设页应可滚动");
+        // 正文元素很高（可能超出视口底部），取它可见范围内的一点做滚轮命中测试。
+        let probe_y = (body.rect.y0 + 40.0).min(page.rect.y1 - 20.0);
+        let probe = fenestra::shell::vello::kurbo::Point::new(body.rect.center().x, probe_y);
+        let got = frame.scrollable_y_at(probe);
         assert_eq!(
-            frame.scrollable_y_at(scroll.rect.center()),
-            Some(scroll.id),
-            "滚轮应路由到正文滚动容器"
+            got,
+            Some(page.id),
+            "鼠标停在正文上时滚轮应路由到页面滚动容器（字和框一起滚），实际 {got:?}；page.id={:?} body.id={:?}",
+            page.id,
+            body.id
         );
-        state.scroll_by(scroll.id, 1_000_000.0);
+        state.scroll_by(page.id, 1_000_000.0);
         let frame2 = build_frame(&root, &theme, &mut fonts, &mut state, (424.0, 760.0), 1.0);
         let body2 = frame2.get(&by::id("persona-edit-body"));
         assert!(
