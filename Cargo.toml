@@ -14,7 +14,7 @@ fenestra-core = { path = "vendor/fenestra-core" }
 fenestra-shell = { path = "vendor/fenestra-shell" }
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 license = "MIT"
 
