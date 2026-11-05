@@ -700,3 +700,12 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
   - `text_area` 加 `shrink0` 保持完整内容高度，并隐藏自身边框/背景（`border(0) + bg(surface)`），避免"框跟着滚"。
 - 真机验证：`logs/ui/persona-frame-b.png`——页面与外框位置不动，框内文字滚到第 8 条/回答格式，文字在框边被裁切、不出框。
 - 测试 `persona_body_inner_scroll_keeps_text_moving` 覆盖内层滚动与框位置不变。
+
+## v0.9.9 人设正文滚动最终修正（最后一行不再被裁）
+
+- 补充问题：内层滚动到底时最后一行仍被框底裁掉半个字。
+- 修复 3 点：
+  1. 外框 padding 移到滚动容器内（鼠标落在框内任何位置都命中内层滚动，而不是只有正对文字）；
+  2. `text_area` 隐藏自身边框/背景（否则边框随文字滚出，像"框在滚"）；
+  3. `text_area` 加底部 padding（文本测量高度比实际末行略少，留余量后滚到底最后一行完整可见）。
+- 真机 `logs/ui/persona-inner-max2.png`：滚到最底时末行「块；不要使用 emoji。」完整显示、框固定不动。

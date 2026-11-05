@@ -306,19 +306,24 @@ fn persona_editor(st: &AppState, c: &UiColors, edit: &PersonaEditState) -> Eleme
         .mono()
         .shrink0()
         .bg(c.surface)
-        .border(0.0, c.surface);
+        .border(0.0, c.surface)
+        // 文本测量高度会比实际末行略少（行高取整/尾行裁切），底部留出余量，
+        // 保证滚到最底时最后一行完整可见、不会卡在框边缘。
+        .pb(space::LG);
     let body_scroll: Element<Msg> = col()
         .w_full()
         .grow()
         .min_h(0.0)
+        .p(space::SM)
         .scroll_y()
         .id("persona-edit-body-scroll")
         .children((body_area,))
         .into();
+    // 注意：padding 放在滚动容器内、不放在外框上，这样鼠标落在框内任何位置
+    // （包括四周留白）滚轮都命中内部滚动容器，而不是"只有正对文字才能滚"。
     let body_frame: Element<Msg> = col()
         .w_full()
         .h(420.0)
-        .p(space::SM)
         .bg(c.surface)
         .border(1.0, c.border_subtle)
         .rounded(R_CONTROL)
