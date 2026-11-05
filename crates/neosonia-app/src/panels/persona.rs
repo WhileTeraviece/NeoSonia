@@ -1,4 +1,4 @@
-//! 人设面板：人设卡片列表 + 可视化编辑 / 新建 + 重新扫描。
+﻿//! 人设面板：人设卡片列表 + 可视化编辑 / 新建 + 重新扫描。
 //!
 //! 人设文件放在 `personas/*.md`，YAML front-matter 声明 name / description，
 //! 正文即系统提示词。编辑/新建通过 `Msg::PersonaEdit*` 交给主循环落盘；
@@ -290,7 +290,19 @@ fn persona_editor(st: &AppState, c: &UiColors, edit: &PersonaEditState) -> Eleme
         })
         .id("persona-edit-body")
         .into();
+    // 正文编辑区固定高度 + 内部滚动：
+    // text_area 自身会随内容长高，长提示词会把整张编辑卡撑高，鼠标停在正文上滚轮
+    // 会被输入框吃掉、外层页面滚不动（用户报"人设正文处无法滚动"）。
+    // 用固定高度的滚动容器包住它，正文超出 420px 后滚轮在正文上也能滚动。
     let body_area = body_area.w_full().mono();
+    let body_area: Element<Msg> = col()
+        .w_full()
+        .h(420.0)
+        .min_h(0.0)
+        .scroll_y()
+        .id("persona-edit-body-scroll")
+        .children((body_area,))
+        .into();
 
     let builtin = !edit.is_new && builtin_persona_id(&edit.id);
     let can_delete = !edit.is_new && !builtin;
@@ -658,5 +670,56 @@ mod tests {
         assert_eq!(display_name("  分析师 ", "analyst"), "分析师");
         assert_eq!(display_name("", "analyst"), "analyst");
         assert_eq!(display_name("", "   "), "未命名人设");
+    }
+    /// 正文编辑区必须有固定高度 + 内部滚动：否则长提示词把编辑卡撑高、鼠标停在
+    /// 正文上滚轮无效（用户报"人设正文处无法滚动"）。
+    #[test]
+    fn persona_body_area_scrolls_when_body_is_long() {
+        use neosonia_core::config::{Paths, Settings};
+        let mut st = AppState::new(
+            Paths::from_root("C:/tmp/neosonia-persona-layout"),
+            Settings::default(),
+        );
+        st.persona_edit = Some(PersonaEditState {
+            is_new: false,
+            id: "default".into(),
+            name: "测试人设".into(),
+            description: "长正文滚动测试".into(),
+            body: (0..150)
+                .map(|i| format!("第 {i} 行：这是一段用于测试人设正文滚动区域的人设提示词内容。"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            error: String::new(),
+        });
+        let theme = crate::theme::nova_theme(neosonia_core::config::ThemeMode::Dark, true, 1.0);
+        let c = crate::theme::colors(&theme);
+        let mut fonts = Fonts::embedded();
+        let mut state = FrameState::new();
+
+        let root = view(&st, &c);
+        let frame = build_frame(&root, &theme, &mut fonts, &mut state, (424.0, 760.0), 1.0);
+        let scroll = frame.get(&by::id("persona-edit-body-scroll"));
+        let body = frame.get(&by::id("persona-edit-body"));
+        assert!(
+            body.rect.height() > scroll.rect.height(),
+            "正文内容({:.1}) 应高于滚动视口({:.1})",
+            body.rect.height(),
+            scroll.rect.height()
+        );
+        assert!(frame.is_scrollable(scroll.id), "正文滚动容器应可滚动");
+        assert_eq!(
+            frame.scrollable_y_at(scroll.rect.center()),
+            Some(scroll.id),
+            "滚轮应路由到正文滚动容器"
+        );
+        state.scroll_by(scroll.id, 1_000_000.0);
+        let frame2 = build_frame(&root, &theme, &mut fonts, &mut state, (424.0, 760.0), 1.0);
+        let body2 = frame2.get(&by::id("persona-edit-body"));
+        assert!(
+            body2.rect.y0 < body.rect.y0 - 100.0,
+            "滚动后正文应上移（{:.1} -> {:.1}）",
+            body.rect.y0,
+            body2.rect.y0
+        );
     }
 }
