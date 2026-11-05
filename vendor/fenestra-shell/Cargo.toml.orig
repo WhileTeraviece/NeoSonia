@@ -1,0 +1,41 @@
+[package]
+name = "fenestra-shell"
+description = "Windowed (winit + wgpu) and headless runners for the fenestra GUI framework"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fenestra-core.workspace = true
+winit.workspace = true
+kurbo.workspace = true
+wgpu.workspace = true
+vello.workspace = true
+
+# Native-only: headless rendering/readback, OS clipboard, AccessKit.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+accesskit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+accesskit_winit.workspace = true
+image.workspace = true
+pollster.workspace = true
+arboard.workspace = true
+
+# The native menu bar attaches on macOS (muda's safe path; see
+# ARCHITECTURE.md for the Windows/Linux story).
+[target.'cfg(target_os = "macos")'.dependencies]
+muda.workspace = true
+
+# Web-only: async surface setup and a clock that works without std::time.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures.workspace = true
+web-time.workspace = true
+web-sys.workspace = true

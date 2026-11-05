@@ -1,0 +1,61 @@
+$ErrorActionPreference = "Continue"
+Set-Location "E:\NeoSonia"
+Add-Type -TypeDefinition @"
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+public class D6 {
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string c, string t);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x,int y,int cx,int cy,uint f);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, int d, IntPtr e);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L,T,R,B; }
+  static IntPtr Find(){ SetProcessDPIAware(); return FindWindowW(null,"NeoSonia"); }
+  public static string Shot(string path){
+    IntPtr h=Find(); if(h==IntPtr.Zero) return "no-window";
+    SetWindowPos(h,new IntPtr(-1),0,0,0,0,0x0001|0x0002);
+    RECT r; GetWindowRect(h,out r);
+    using(Bitmap bmp=new Bitmap(r.R-r.L,r.B-r.T)){ using(Graphics g=Graphics.FromImage(bmp)){ g.CopyFromScreen(r.L,r.T,0,0,new Size(r.R-r.L,r.B-r.T)); } bmp.Save(path,System.Drawing.Imaging.ImageFormat.Png);} return "saved";
+  }
+  public static string Click(int rx, int ry){
+    IntPtr h=Find(); if(h==IntPtr.Zero) return "no-window";
+    RECT r; GetWindowRect(h,out r);
+    SetForegroundWindow(h); System.Threading.Thread.Sleep(80);
+    SetCursorPos(r.L+rx, r.T+ry); System.Threading.Thread.Sleep(50);
+    mouse_event(0x0001,0,0,0,IntPtr.Zero); System.Threading.Thread.Sleep(20);
+    mouse_event(0x0002,0,0,0,IntPtr.Zero); System.Threading.Thread.Sleep(20);
+    mouse_event(0x0004,0,0,0,IntPtr.Zero);
+    return "ok";
+  }
+}
+"@ -ReferencedAssemblies System.Drawing
+$cfg2 = Get-Content E:\Sonia\config\settings.yaml -Raw
+$env:NEOSONIA_API_KEY = [regex]::Match($cfg2,'api_key:\s*(\S+)').Groups[1].Value
+$env:NEOSONIA_FRAME_LOG = "1"
+Get-Process neosonia -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 600
+Remove-Item "E:\NeoSonia\sandbox\logs\neosonia.log" -ErrorAction SilentlyContinue
+Remove-Item "E:\NeoSonia\logs\anim3.err" -ErrorAction SilentlyContinue
+$out = "E:\NeoSonia\logs\ui\anim3"
+New-Item -ItemType Directory -Force $out | Out-Null
+$p = Start-Process -FilePath "E:\NeoSonia\target\debug\neosonia.exe" -ArgumentList "--home","E:\NeoSonia\sandbox" -PassThru -RedirectStandardError "E:\NeoSonia\logs\anim3.err"
+for ($i = 0; $i -lt 300; $i++) { Start-Sleep -Milliseconds 300; if ((Test-Path "E:\NeoSonia\sandbox\logs\neosonia.log") -and (Select-String -Path "E:\NeoSonia\sandbox\logs\neosonia.log" -Pattern "dock attempt" -Quiet -ErrorAction SilentlyContinue)) { break } }
+Start-Sleep -Milliseconds 2000
+"start shot: $([D6]::Shot("$out\00-before.png"))"
+# 点「设置」，过渡期间连拍
+[void][D6]::Click([int](201*2.5), [int](68*2.5))
+Start-Sleep -Milliseconds 40
+"fade shot A: $([D6]::Shot("$out\01-fade-a.png"))"
+Start-Sleep -Milliseconds 60
+"fade shot B: $([D6]::Shot("$out\02-fade-b.png"))"
+Start-Sleep -Milliseconds 400
+"settled: $([D6]::Shot("$out\03-settled.png"))"
+# idle 2s 是否还有持续动画
+$b = (Get-Item "E:\NeoSonia\logs\anim3.err").Length; Start-Sleep -Seconds 2; $a = (Get-Item "E:\NeoSonia\logs\anim3.err").Length
+"idle2s frame-log delta=$($a-$b) bytes"
+Get-Content "E:\NeoSonia\logs\anim3.err" -Tail 3
+Get-Process neosonia -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Remove-Item Env:NEOSONIA_FRAME_LOG -ErrorAction SilentlyContinue

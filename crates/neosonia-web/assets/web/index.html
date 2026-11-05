@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#121114">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex, nofollow">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="format-detection" content="telephone=no">
+<title>NeoSonia 远程</title>
+<link rel="icon" type="image/png" href="{{FAVICON_DATA_URI}}">
+<style>
+/* 首屏关键样式：不等外部 style.css 也能有正确的底色/骨架，避免白屏闪一下。 */
+html { background: #121114; color: #f2f0f8; }
+body {
+  margin: 0;
+  background: #121114;
+  color: #f2f0f8;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
+}
+#boot {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #807e84;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+}
+.sk {
+  position: relative;
+  overflow: hidden;
+  background: #252428;
+  border-radius: 12px;
+}
+.sk::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  animation: sk-shimmer 1.2s infinite;
+}
+@keyframes sk-shimmer { 100% { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) {
+  .sk::after { animation: none; }
+}
+</style>
+<link rel="stylesheet" href="/style.css?v={{APP_VERSION}}">
+</head>
+<body>
+<div id="boot" class="boot">正在连接 NeoSonia…</div>
+
+<div id="pair-view" class="view hidden">
+  <div class="pair-wrap">
+    <div class="pair-card">
+      <div class="brand">
+        <img src="/logo-64.png?v={{APP_VERSION}}" alt="NeoSonia" class="brand-logo" width="28" height="28">
+        <span class="brand-name">NeoSonia</span>
+        <span class="brand-sub">远程访问</span>
+      </div>
+      <h1 class="pair-title">配对这台设备</h1>
+      <p class="pair-hint">扫码进入时已自动填写配对码并尝试配对；如果失败，可在下面手动输入桌面端显示的 8 位配对码。</p>
+      <p id="pair-auto" class="pair-auto hidden" role="status" aria-live="polite"><span class="pair-spin" aria-hidden="true"></span>正在自动配对…</p>
+      <label class="field">
+        <span class="field-label">配对码</span>
+        <input id="pair-code" class="input code-input" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" placeholder="例如 A2C4-E6F8">
+      </label>
+      <label class="field">
+        <span class="field-label">设备名称</span>
+        <input id="pair-name" class="input" maxlength="32" autocomplete="off" placeholder="例如 我的手机">
+      </label>
+      <button id="pair-btn" class="btn btn-primary btn-block" type="button">开始配对</button>
+      <p id="pair-error" class="error hidden"></p>
+      <p id="pair-note" class="pair-note hidden"></p>
+      <details id="pair-help" class="pair-help">
+        <summary>连不上？点这里查看排障步骤</summary>
+        <div class="pair-help-body">
+          <p>当前访问地址：<span id="pair-origin" class="mono">—</span></p>
+          <p id="pair-loopback-warn" class="pair-warn hidden">当前用的是 127.0.0.1 / localhost，手机无法访问这个地址。请在桌面端「远程访问」页刷新二维码，改用 http://192.168.x.x:端口 这样的局域网地址。</p>
+          <ol>
+            <li>确认手机和电脑连接同一个 Wi-Fi（不要用移动数据或访客网络）。</li>
+            <li>确认二维码/访问地址里是 <span class="mono">192.168.x.x</span> 这类局域网 IP，而不是 127.0.0.1。</li>
+            <li>Windows 防火墙首次会拦截：允许「NeoSonia」专用网络访问；或在管理员 PowerShell 里放行端口：
+              <br><code class="inline">netsh advfirewall firewall add rule name="NeoSonia Web" dir=in action=allow protocol=TCP localport=8787</code>
+            </li>
+            <li>关闭 VPN / 代理软件后重试（VPN 会改变路由，手机可能连不到电脑）。</li>
+            <li>部分路由器的「AP 隔离 / 访客网络隔离」会阻止同一 Wi-Fi 下的设备互访，需要在路由器设置里关闭。</li>
+            <li>仍不行：在电脑上打开 <span class="mono">http://&lt;局域网IP&gt;:端口/healthz</span>，能看到 JSON 就说明服务本身正常，问题在网络或防火墙。</li>
+          </ol>
+        </div>
+      </details>
+      <div class="pair-foot">
+        <p>配对码一次性有效，过期后请在桌面端刷新。</p>
+        <p>只接受同一局域网内的设备连接；token 只保存在本机浏览器里。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<main id="app-view" class="view app hidden">
+  <div id="drop-overlay" class="drop-overlay hidden" aria-hidden="true">
+    <div class="drop-overlay-box">
+      <div class="drop-overlay-title">松开上传 <span id="drop-count">0</span> 个文件</div>
+      <div class="drop-overlay-sub">图片 / 文本 / 文件，单个 ≤25MB、最多 8 个</div>
+    </div>
+  </div>
+  <header class="topbar">
+    <button id="back-btn" class="icon-btn hidden" type="button" aria-label="返回列表">返回</button>
+    <div class="topbar-main">
+      <span id="top-title" class="top-title">对话</span>
+      <span id="mode-chip" class="mode-chip hidden" title="当前工作模式">日常</span>
+      <span id="conn-dot" class="dot dot-off" title="连接状态"></span>
+    </div>
+    <button id="device-btn" class="icon-btn" type="button" aria-label="设备信息">设备</button>
+  </header>
+
+  <div id="conn-banner" class="conn-banner hidden" role="status" aria-live="polite">
+    <span id="conn-banner-text" class="conn-banner-text">连接已断开，正在重连…</span>
+    <button id="conn-retry" class="review-more" type="button">立即重试</button>
+  </div>
+
+  <div id="review-bar" class="review-bar hidden" role="status" aria-live="polite">
+    <div class="review-summary">
+      <span class="review-mark" aria-hidden="true">!</span>
+      <span id="review-text" class="review-text">有操作等待桌面端审查</span>
+      <button id="review-toggle" class="review-more" type="button" aria-expanded="false">查看</button>
+    </div>
+    <div id="review-list" class="review-list hidden"></div>
+  </div>
+
+  <section id="list-view" class="pane">
+    <div id="list-brand" class="list-brand">
+      <img src="/logo-64.png?v={{APP_VERSION}}" alt="NeoSonia" width="24" height="24">
+      <span>NeoSonia</span>
+      <span class="list-brand-sub">远程访问</span>
+    </div>
+    <div class="list-tools">
+      <input id="search-input" class="search" type="search" placeholder="搜索对话或消息" autocomplete="off" enterkeyhint="search">
+      <button id="new-btn" class="btn btn-ghost" type="button">新对话</button>
+    </div>
+    <div id="search-panel" class="search-panel hidden"></div>
+    <div id="list-skeleton" class="skeleton-list hidden" aria-hidden="true">
+      <div class="sk sk-session"></div>
+      <div class="sk sk-session"></div>
+      <div class="sk sk-session"></div>
+    </div>
+    <div id="list-error" class="error-box hidden"></div>
+    <div id="session-list" class="session-list"></div>
+    <div id="list-empty" class="empty hidden">
+      <p class="empty-title">还没有历史对话</p>
+      <p class="empty-text">点「新对话」，或者直接回到桌面端说点什么。</p>
+    </div>
+  </section>
+
+  <section id="chat-view" class="pane chat-pane hidden">
+    <div id="chat-skeleton" class="skeleton-chat hidden" aria-hidden="true">
+      <div class="sk sk-bubble sk-left"></div>
+      <div class="sk sk-bubble sk-right"></div>
+    </div>
+    <div id="chat-error" class="error-box hidden"></div>
+    <div id="messages" class="messages"></div>
+    <button id="jump-btn" class="jump-btn hidden" type="button">回到底部</button>
+    <div id="chat-empty" class="empty hidden">
+      <p class="empty-title">开始新的对话</p>
+      <p class="empty-text">在下面输入消息，NeoSonia 会在这台设备上执行并实时回复。</p>
+    </div>
+    <div id="status-line" class="status-line hidden"></div>
+    <div id="attach-strip" class="attach-strip hidden">
+      <div id="attach-items" class="attach-items"></div>
+      <div id="attach-hint" class="attach-hint">可拖动文件到聊天区，或点上方「上传附件」（图片/文本/文件，单个 ≤25MB，最多 8 个）</div>
+    </div>
+    <div id="composer-tools" class="composer-tools">
+      <button id="attach-btn" class="tool-btn" type="button" aria-label="上传附件" title="上传附件">
+        <svg class="tool-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+        <span>上传附件</span>
+      </button>
+      <input id="file-input" class="hidden" type="file" multiple>
+      <div id="attach-progress" class="attach-progress-bar hidden" role="progressbar" aria-label="上传进度"><i></i></div>
+      <a id="provider-ball" class="provider-ball hidden" target="_blank" rel="noopener noreferrer"
+         aria-label="API 状态" title="API 状态"></a>
+    </div>
+    <div class="composer">
+      <textarea id="composer-input" class="composer-input" rows="1" placeholder="说点什么… 可拖动文件到这里上传" enterkeyhint="send"></textarea>
+      <button id="stop-btn" class="btn btn-danger hidden" type="button">停止</button>
+      <button id="send-btn" class="btn btn-primary" type="button">发送</button>
+    </div>
+  </section>
+
+  <section id="device-view" class="pane device-pane hidden">
+    <div class="card">
+      <h2 class="card-title">这台设备</h2>
+      <dl class="kv">
+        <dt>设备名称</dt><dd id="dev-name">—</dd>
+        <dt>设备 ID</dt><dd id="dev-id" class="mono">—</dd>
+        <dt>连接状态</dt><dd id="dev-conn">—</dd>
+        <dt>客户端 IP</dt><dd id="dev-client" class="mono">—</dd>
+        <dt>最后心跳</dt><dd id="dev-heartbeat">—</dd>
+        <dt>最近连接</dt><dd id="dev-seen">—</dd>
+        <dt>连接地址</dt><dd id="dev-addr" class="mono">—</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2 class="card-title">桌面端</h2>
+      <dl class="kv">
+        <dt>主机名</dt><dd id="srv-host">—</dd>
+        <dt>版本</dt><dd id="srv-version">—</dd>
+        <dt>模型</dt><dd id="srv-model">—</dd>
+        <dt>模式</dt><dd id="srv-mode">—</dd>
+        <dt>状态</dt><dd id="srv-busy">—</dd>
+        <dt>服务监听</dt><dd id="srv-bind" class="mono">—</dd>
+        <dt>访问地址</dt><dd id="srv-advertise" class="mono">—</dd>
+        <dt>局域网地址</dt><dd id="srv-lan" class="mono">—</dd>
+        <dt>配对码</dt><dd id="srv-pairing">—</dd>
+        <dt>待审查</dt><dd id="srv-review">—</dd>
+        <dt>API 状态</dt><dd id="srv-provider">—</dd>
+      </dl>
+      <p class="hint">API 状态球图例：绿=正常、黄=轻微故障、橙=部分中断、红=严重中断；点击顶栏小球可打开厂商状态页。</p>
+    </div>
+    <div class="card">
+      <h2 class="card-title">性能</h2>
+      <dl class="kv">
+        <dt>首次绘制</dt><dd id="perf-first-paint" class="mono">—</dd>
+        <dt>应用就绪</dt><dd id="perf-app" class="mono">—</dd>
+        <dt>会话列表</dt><dd id="perf-sessions" class="mono">—</dd>
+        <dt>会话请求</dt><dd id="perf-fetch" class="mono">—</dd>
+        <dt>WebSocket</dt><dd id="perf-ws" class="mono">—</dd>
+        <dt>消息渲染</dt><dd id="perf-render" class="mono">—</dd>
+      </dl>
+      <p class="hint">由本机浏览器 Performance API 测量，相对页面开始加载的毫秒数，用于远程访问性能对比。</p>
+    </div>
+    <div class="card">
+      <h2 class="card-title">已信任设备</h2>
+      <div id="device-list" class="device-list"></div>
+    </div>
+    <div class="card">
+      <h2 class="card-title">维护</h2>
+      <button id="refresh-devices-btn" class="btn btn-ghost btn-block" type="button">刷新设备列表</button>
+      <button id="unpair-btn" class="btn btn-danger btn-block" type="button">断开本设备</button>
+      <p class="hint">断开后会清除本机保存的 token 并回到配对页，下次需要重新扫码/输入配对码。</p>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/spa-core.js?v={{APP_VERSION}}" defer></script>
+<script src="/md-core.js?v={{APP_VERSION}}" defer></script>
+<script src="/app.js?v={{APP_VERSION}}" defer></script>
+</body>
+</html>

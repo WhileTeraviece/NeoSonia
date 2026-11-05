@@ -1,0 +1,37 @@
+﻿[package]
+name = "neosonia-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+eventsource-stream = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = { workspace = true }
+base64 = { workspace = true }
+percent-encoding = { workspace = true }
+url = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tempfile = { workspace = true }
+image = { workspace = true }
+rusqlite = { workspace = true }
+directories = { workspace = true }
+walkdir = { workspace = true }
+globset = { workspace = true }
+ignore = { workspace = true }
+sysinfo = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

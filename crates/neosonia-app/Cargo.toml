@@ -1,0 +1,53 @@
+﻿[package]
+name = "neosonia-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neosonia"
+path = "src/main.rs"
+
+[dependencies]
+neosonia-core = { workspace = true }
+neosonia-tools = { workspace = true }
+neosonia-mail = { workspace = true }
+neosonia-web = { workspace = true }
+neosonia-mcp = { workspace = true }
+rfd = { workspace = true }
+xcap = { workspace = true }
+fenestra = { workspace = true }
+fenestra-markdown = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = { workspace = true }
+global-hotkey = { workspace = true }
+tray-icon = { workspace = true }
+image = { workspace = true }
+raw-window-handle = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
+arboard = { workspace = true }
+open = { workspace = true }
+sysinfo = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+[build-dependencies]
+embed-resource = { workspace = true }

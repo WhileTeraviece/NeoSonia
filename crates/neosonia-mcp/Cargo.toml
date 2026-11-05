@@ -1,0 +1,21 @@
+[package]
+name = "neosonia-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neosonia-core = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+
+# 真机探查用的小命令行工具（连接 scripts/mcp-demo-server.mjs）。
+[[bin]]
+name = "mcp_probe"
+path = "src/bin/mcp_probe.rs"

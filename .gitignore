@@ -1,0 +1,48 @@
+# 构建产物
+/target
+/dist
+/build
+/sbuild
+**/*.rs.bk
+
+# 运行期数据（每台机器不同，绝不入库）
+/config
+/data
+/logs
+/sandbox
+/sandbox-*
+/workspace
+/personas
+/skills
+qrcodes
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.log
+*.bak
+*.bak-*
+*.exe
+*.zip
+*.msi
+*.ico
+*.icns
+
+# 本地探针/临时目录
+/_probe
+/_probe-*
+/probe-*
+neosonia-old-*.exe
+neosonia-running-*.exe
+locked-*.exe
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# 允许的图标（源码资源）
+!/assets/*.png
+!/crates/*/res/*.ico
