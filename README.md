@@ -560,7 +560,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 
 ## 许可
 
-MIT License。详见 [LICENSE](LICENSE)。
+MIT License。详见 [LICENSE](LICENSE)。第三方组件许可见 [NOTICE.md](NOTICE.md)。
 
 第三方依赖遵循各自许可证（fenestra 系列、winit、wgpu、vello、parley、taffy、tokio、axum 等，
 均为 MIT / Apache-2.0）；`vendor/` 下的 fenestra-core / fenestra-shell 为本地 patch 版本，
