@@ -294,19 +294,38 @@ fn persona_editor(st: &AppState, c: &UiColors, edit: &PersonaEditState) -> Eleme
     // text_area 自身会随内容长高，长提示词会把整张编辑卡撑高，鼠标停在正文上滚轮
     // 会被输入框吃掉、外层页面滚不动（用户报"人设正文处无法滚动"）。
     // 用固定高度的滚动容器包住它，正文超出 420px 后滚轮在正文上也能滚动。
-    // 正文框固定高度 + **内层滚动**：用户希望"框不动、字在框里滚"。
-    // 注意 text_area 必须 .shrink0()——否则它会被固定高度的滚动容器压缩到视口高，
-    // 内容被裁掉、只有容器（框）在动而字不动（上一版的问题）。
-    let body_area = body_area.w_full().mono().shrink0();
-    let body_area: Element<Msg> = col()
+    // 正文：**固定外框 + 内层滚动**（框不动、字在框里滚）。
+    //
+    // 之前直接把 text_area 放进 scroll_y 容器有两个问题：
+    // 1) 不加 shrink0 时 text_area 被压缩、文字被裁；
+    // 2) 即使能滚，text_area 自己的边框/背景也是"内容的一部分"，会跟着文字一起滚，
+    //    看起来就是"框在滚、文字出框"。所以这里自己画固定外框，把 text_area 的
+    //    边框/背景隐藏，只让文字在框内滚动。
+    let body_area = body_area
         .w_full()
-        .h(420.0)
+        .mono()
+        .shrink0()
+        .bg(c.surface)
+        .border(0.0, c.surface);
+    let body_scroll: Element<Msg> = col()
+        .w_full()
+        .grow()
         .min_h(0.0)
         .scroll_y()
         .id("persona-edit-body-scroll")
         .children((body_area,))
         .into();
-
+    let body_frame: Element<Msg> = col()
+        .w_full()
+        .h(420.0)
+        .p(space::SM)
+        .bg(c.surface)
+        .border(1.0, c.border_subtle)
+        .rounded(R_CONTROL)
+        .overflow_hidden()
+        .id("persona-edit-body-frame")
+        .children((body_scroll,))
+        .into();
     let builtin = !edit.is_new && builtin_persona_id(&edit.id);
     let can_delete = !edit.is_new && !builtin;
     let can_save = !edit.is_new || id_ok;
@@ -353,7 +372,7 @@ fn persona_editor(st: &AppState, c: &UiColors, edit: &PersonaEditState) -> Eleme
                 .size(TextSize::Xs)
                 .weight(Weight::Medium)
                 .color(c.text_muted),
-            body_area,
+            body_frame,
             text("建议 300–2000 字：写清身份、语气、执行习惯和禁止事项。")
                 .size(TextSize::Xs)
                 .color(c.text_subtle),

@@ -689,3 +689,14 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
 - 修复：正文框 420px 固定高度 + `scroll_y`（id `persona-edit-body-scroll`），内部 `text_area` 加 `.shrink0()` 保持完整内容高度 → 框固定、文字在框内滚动；编辑器卡片仍保留 `shrink0` 让整页可滚到按钮区。
 - 回归测试 `persona_body_inner_scroll_keeps_text_moving`：正文高 > 框高（text_area 未被压扁）、框可滚、滚轮命中框、滚动后文字上移而框位置不变。
 - 真机截图：`logs/ui/persona-inner2-before.png` / `persona-inner2-after.png`（框位置不变、框内文字上移）。
+
+## v0.9.8 人设正文：固定外框 + 框内滚动（最终版）
+
+- 现象演进：内层滚动容器无 shrink0 → 框滚字不滚；页面级滚动 → 框跟着页面走；最终确定需求是"框固定、字在框内滚动、内容不出框"。
+- 关键发现：`text_area` 自身的边框/背景属于"内容"，在滚动容器里会随文字一起滚出视野，看起来就是"框在滚、字出框"。
+- 修复：
+  - 外层自绘固定框（420px，`border + bg + rounded + overflow_hidden`，id `persona-edit-body-frame`）；
+  - 框内 `scroll_y` 容器（id `persona-edit-body-scroll`）滚动 `text_area`；
+  - `text_area` 加 `shrink0` 保持完整内容高度，并隐藏自身边框/背景（`border(0) + bg(surface)`），避免"框跟着滚"。
+- 真机验证：`logs/ui/persona-frame-b.png`——页面与外框位置不动，框内文字滚到第 8 条/回答格式，文字在框边被裁切、不出框。
+- 测试 `persona_body_inner_scroll_keeps_text_moving` 覆盖内层滚动与框位置不变。
