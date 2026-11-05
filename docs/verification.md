@@ -681,3 +681,11 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
 - 修复：撤销正文内部滚动容器；给编辑器卡片加 `.min_h(0).shrink0()`，让页面级 `scroll_y` 真正生效——字和框一起随页面滚动。
 - 回归测试 `persona_editor_page_scrolls_long_body`：编辑器卡片高 > 视口、正文区不被压缩、页面可滚、鼠标停在正文可见区域时滚轮命中页面滚动容器、滚动后正文上移。
 - `cargo test -p neosonia-app` **74 passed**。
+
+## v0.9.7 人设正文：框固定、字在框内滚动
+
+- 需求澄清：要"外层滚到底也不够看全 → 内层文本框自己滚（框不动、字滚）"。
+- 根因（上一版失败原因）：`text_area` 放进固定高度 `scroll_y` 容器时没有 `shrink0`，被压缩到视口高、文字被裁掉，于是只有容器在滚、字不动。
+- 修复：正文框 420px 固定高度 + `scroll_y`（id `persona-edit-body-scroll`），内部 `text_area` 加 `.shrink0()` 保持完整内容高度 → 框固定、文字在框内滚动；编辑器卡片仍保留 `shrink0` 让整页可滚到按钮区。
+- 回归测试 `persona_body_inner_scroll_keeps_text_moving`：正文高 > 框高（text_area 未被压扁）、框可滚、滚轮命中框、滚动后文字上移而框位置不变。
+- 真机截图：`logs/ui/persona-inner2-before.png` / `persona-inner2-after.png`（框位置不变、框内文字上移）。
