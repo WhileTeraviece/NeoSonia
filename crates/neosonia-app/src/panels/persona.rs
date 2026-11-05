@@ -280,54 +280,44 @@ fn persona_editor(st: &AppState, c: &UiColors, edit: &PersonaEditState) -> Eleme
         .into();
 
     // ---- body ----
-    let body_area: Element<Msg> = text_area(edit.body.clone())
-        .placeholder("这里写系统提示词：身份、语气、做事方式、边界……")
-        .width(320.0)
-        .min_height(420.0)
-        .on_input(|s| Msg::PersonaEditField {
-            field: "body".to_string(),
-            value: s,
-        })
-        .id("persona-edit-body")
-        .into();
-    // 正文编辑区固定高度 + 内部滚动：
-    // text_area 自身会随内容长高，长提示词会把整张编辑卡撑高，鼠标停在正文上滚轮
-    // 会被输入框吃掉、外层页面滚不动（用户报"人设正文处无法滚动"）。
-    // 用固定高度的滚动容器包住它，正文超出 420px 后滚轮在正文上也能滚动。
-    // 正文：**固定外框 + 内层滚动**（框不动、字在框里滚）。
-    //
-    // 之前直接把 text_area 放进 scroll_y 容器有两个问题：
-    // 1) 不加 shrink0 时 text_area 被压缩、文字被裁；
-    // 2) 即使能滚，text_area 自己的边框/背景也是"内容的一部分"，会跟着文字一起滚，
-    //    看起来就是"框在滚、文字出框"。所以这里自己画固定外框，把 text_area 的
-    //    边框/背景隐藏，只让文字在框内滚动。
-    let body_area = body_area
-        .w_full()
-        .mono()
-        .shrink0()
-        .bg(c.surface)
-        .border(0.0, c.surface)
-        // 文本测量高度会比实际末行略少（行高取整/尾行裁切），底部留出余量，
-        // 保证滚到最底时最后一行完整可见、不会卡在框边缘。
-        .pb(space::LG);
-    let body_scroll: Element<Msg> = col()
+    // 直接用 core 的 raw_text_area，而不是 kit 的 text_area：kit 会自带
+    // 边框/背景/焦点描边，放在自绘外框里就是"框里的框"，且背景会随文字滚动。
+    let body_area: Element<Msg> = raw_text_area(
+        edit.body.clone(),
+        "这里写系统提示词：身份、语气、做事方式、边界……",
+    )
+    .w_full()
+    .min_h(420.0)
+    .mono()
+    .shrink0()
+    .px(space::SM)
+    .py(space::SM)
+    .pb(space::LG)
+    .size(TextSize::Sm)
+    .focus_ring(false)
+    .id("persona-edit-body")
+    .on_input(|s: &str| Msg::PersonaEditField {
+        field: "body".to_string(),
+        value: s.to_string(),
+    });    let body_scroll: Element<Msg> = col()
         .w_full()
         .grow()
         .min_h(0.0)
         .p(space::SM)
         .scroll_y()
+        .focus_ring(false)
         .id("persona-edit-body-scroll")
         .children((body_area,))
         .into();
     // 注意：padding 放在滚动容器内、不放在外框上，这样鼠标落在框内任何位置
     // （包括四周留白）滚轮都命中内部滚动容器，而不是"只有正对文字才能滚"。
+    // 只做裁剪，不再画边框/背景：避免"框里的框"（编辑器卡片已有外框）。
     let body_frame: Element<Msg> = col()
         .w_full()
         .h(420.0)
-        .bg(c.surface)
-        .border(1.0, c.border_subtle)
         .rounded(R_CONTROL)
         .overflow_hidden()
+        .focus_ring(false)
         .id("persona-edit-body-frame")
         .children((body_scroll,))
         .into();

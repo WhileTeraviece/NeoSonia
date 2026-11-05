@@ -1,4 +1,4 @@
-//! The element IR: a plain tree of boxes and text, with typed styles,
+﻿//! The element IR: a plain tree of boxes and text, with typed styles,
 //! interaction variant overlays, and `Msg`-carrying handlers. `view()`
 //! rebuilds this tree on every redraw; it must stay cheap to construct.
 
@@ -600,6 +600,8 @@ pub struct Element<Msg> {
     /// Forces children of a z-stack into the same grid cell.
     pub(crate) stack: bool,
     pub(crate) focusable: bool,
+    /// Whether the keyboard focus halo is painted when focused via keyboard.
+    pub(crate) focus_ring: bool,
     pub(crate) autofocus: bool,
     /// Scroll containers only: keep pinned to the bottom while content
     /// grows (chat/log pattern).
@@ -681,6 +683,7 @@ impl<Msg> Element<Msg> {
             source: std::panic::Location::caller(),
             stack: false,
             focusable: false,
+            focus_ring: true,
             autofocus: false,
             stick_bottom: false,
             cursor: None,
@@ -886,6 +889,12 @@ impl<Msg> Element<Msg> {
 
     /// Marks the control invalid: its keyboard focus ring and swapped border
     /// recolor to the danger hue (shadcn's `aria-invalid` ring).
+    /// 关闭焦点光环（用于自绘外框的输入区，避免"框里的框"）。
+    pub fn focus_ring(mut self, on: bool) -> Self {
+        self.focus_ring = on;
+        self
+    }
+
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
         self
@@ -2214,6 +2223,7 @@ impl<Msg: 'static> Element<Msg> {
             source: self.source,
             stack: self.stack,
             focusable: self.focusable,
+            focus_ring: self.focus_ring,
             autofocus: self.autofocus,
             stick_bottom: self.stick_bottom,
             cursor: self.cursor,

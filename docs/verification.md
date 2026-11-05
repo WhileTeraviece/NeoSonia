@@ -709,3 +709,12 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
   2. `text_area` 隐藏自身边框/背景（否则边框随文字滚出，像"框在滚"）；
   3. `text_area` 加底部 padding（文本测量高度比实际末行略少，留余量后滚到底最后一行完整可见）。
 - 真机 `logs/ui/persona-inner-max2.png`：滚到最底时末行「块；不要使用 emoji。」完整显示、框固定不动。
+
+## v0.9.10 人设正文最终修正：点哪行光标在哪行 + 去掉框里的框
+
+- **点击定位错误**：fenestra-core `input_local` 把指针 y 固定成 `rect.height()*0.5`，多行输入点哪都定位到中间行，只能靠方向键。修复：用真实 `point.y - rect.y0 - pad_top`（含滚动偏移后的 rect）。
+- **框里的框**：kit 的 `text_area` 组件自带 1px 边框 + 焦点 accent 描边（是"框里的框"的直接来源，且背景随内容滚动）。改为直接用 core 的 `raw_text_area`，自绘颜色/字号/内边距，焦点环关闭；外框仍由固定高度滚动容器裁剪。
+- 真机验证：
+  - `logs/ui/persona-raw-caret.png`：在正文不同行点击两次并回车，换行分别插入在点击位置（"一个常|" 与 "不寒暄、|"），不再是固定同一行；
+  - 正文区不再有内层边框，文字直接在编辑卡内；内层滚动、滚到最底末行完整可见保持。
+- 兼容：`focus_ring(bool)` 是 vendor/fenestra-core 新增的 Element builder（默认 true），可关掉键盘焦点光环。

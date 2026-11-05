@@ -1,4 +1,4 @@
-//! The frame pipeline: element tree -> ids -> style resolution -> taffy
+﻿//! The frame pipeline: element tree -> ids -> style resolution -> taffy
 //! layout (with parley-backed text measurement) -> a [`Frame`] of resolved
 //! absolute rects -> vello scene. Pure given `(tree, theme, size, scale)`
 //! plus the retained [`FrameState`].
@@ -316,6 +316,7 @@ struct BuiltNode {
     kind: PaintKind,
     style: Style,
     focusable: bool,
+    focus_ring: bool,
     disabled: bool,
     /// Recolors the keyboard focus ring to the danger hue.
     invalid: bool,
@@ -907,6 +908,7 @@ fn build<Msg>(
         kind,
         style,
         focusable: el.focusable,
+        focus_ring: el.focus_ring,
         disabled: el.disabled,
         invalid: el.invalid,
         spin: el.spin,
@@ -1266,7 +1268,8 @@ impl Realize<'_> {
 
         let meta = NodeMeta {
             focusable: node.focusable && !node.disabled,
-            focus_ring: node.focusable
+            focus_ring: node.focus_ring
+                && node.focusable
                 && !node.disabled
                 && self.state.focused() == Some(node.id)
                 && self.state.focus_visible,

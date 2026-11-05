@@ -1,4 +1,4 @@
-//! Input events and dispatch: hit testing against the laid-out frame,
+﻿//! Input events and dispatch: hit testing against the laid-out frame,
 //! hover/active/focus bookkeeping with active capture, keyboard focus
 //! cycling, and message extraction from element handlers.
 
@@ -1061,5 +1061,9 @@ fn input_local<Msg>(
     let point = frame.to_layout_point(id, point)?;
     let scroll_x = state.editors.get(&id).map_or(0.0, |e| e.scroll_x);
     let pad = f64::from(el.style().padding.left);
-    Some((point.x - rect.x0 - pad + scroll_x, rect.height() * 0.5))
+    let pad_top = f64::from(el.style().padding.top);
+    // 多行输入必须用真实 y（相对文本原点）：旧实现固定返回 rect.height()/2，
+    // 导致"点哪里光标都落在同一行（中间那行）"，只能靠方向键移动。
+    let y = point.y - rect.y0 - pad_top;
+    Some((point.x - rect.x0 - pad + scroll_x, y))
 }
