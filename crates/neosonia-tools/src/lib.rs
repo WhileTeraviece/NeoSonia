@@ -17,6 +17,7 @@ pub mod index;
 pub mod input;
 pub mod screen;
 pub mod shell;
+pub mod snapshot;
 pub mod system;
 pub mod uia;
 pub mod web;
@@ -104,6 +105,8 @@ pub fn register_all(reg: &ToolRegistry, settings: &Settings) {
     register_fs(reg);
     register_system(reg);
     register_web(reg);
+    // 即时存档不依赖 shell/input 设置，无条件注册（备份区只读防护需要它始终可用）。
+    snapshot::register(reg);
 
     if settings.tools.allow_shell {
         register_shell(reg);
@@ -143,6 +146,7 @@ pub fn tool_catalog() -> Vec<ToolSpec> {
     uia::register(&reg);
     cdp::register(&reg);
     index::register(&reg);
+    snapshot::register(&reg);
     reg.specs()
 }
 
@@ -260,12 +264,16 @@ pub(crate) fn resolve_read_path(ctx: &ToolCtx, raw: &str) -> Result<PathBuf, Too
 }
 
 /// 写路径：默认必须落在工作目录内；`allow_outside=true` 时才放行外部路径。
+///
+/// 备份区（`paths.backups`）是例外：任何写/创建/删除/移动都拒绝，
+/// 即使 `allow_outside=true` 也不行；只能走 `snapshot_save` / `snapshot_delete`。
 pub(crate) fn resolve_write_path(
     ctx: &ToolCtx,
     raw: &str,
     allow_outside: bool,
 ) -> Result<PathBuf, ToolOutcome> {
     let path = resolve_path_lexical(ctx, raw)?;
+    snapshot::guard_backups_write(&ctx.paths(), &path)?;
     let ws = neosonia_core::util::normalize_lexical(&workspace_dir(ctx));
     if !allow_outside && !neosonia_core::util::is_within(&ws, &path) {
         return Err(ToolOutcome::err(format!(

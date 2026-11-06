@@ -5,7 +5,7 @@
 
 use fenestra::prelude::*;
 
-use crate::state::{AppState, Msg, NavPage};
+use crate::state::{AppState, Msg};
 use crate::theme::{space, UiColors, R_CARD, R_CHIP};
 
 const PANEL_ID: &str = "panel-remote";
@@ -88,20 +88,21 @@ fn card(c: &UiColors, rows: Vec<Element<Msg>>) -> Element<Msg> {
 }
 
 fn header(st: &AppState, c: &UiColors) -> Element<Msg> {
+    // 标题/说明左端对齐；刷新改为右上角图标按钮（无「返回设置」文字按钮）。
     row()
         .w_full()
-        .items_end()
-        .justify_between()
+        .items_start()
         .gap(space::MD)
         .children((
-            col().grow().gap(2.0).children((
+            col().grow().min_w(0.0).gap(2.0).children((
                 text("设备")
                     .size(TextSize::Lg)
                     .weight(Weight::Semibold)
                     .color(c.text),
                 text("手机、平板连同一个局域网，扫码配对后就能远程和 NeoSonia 聊天。")
                     .size(TextSize::Xs)
-                    .color(c.text_muted),
+                    .color(c.text_muted)
+                    .leading(1.5),
             )),
             row().items_center().gap(space::SM).shrink0().children((
                 if st.remote.busy {
@@ -112,16 +113,12 @@ fn header(st: &AppState, c: &UiColors) -> Element<Msg> {
                 } else {
                     col().w(0.0)
                 },
-                button("刷新")
+                icon_button(icons::lucide::refresh_cw())
                     .variant(ButtonVariant::Secondary)
                     .size(ControlSize::Sm)
+                    .label("刷新设备")
                     .on_click(Msg::RemoteRefresh)
                     .id("remote-refresh"),
-                button("返回设置")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ControlSize::Sm)
-                    .on_click(Msg::Nav(NavPage::Settings))
-                    .id("remote-back"),
             )),
         ))
 }
@@ -652,5 +649,62 @@ mod tests {
         assert!(!valid_device_name("   "));
         assert!(!valid_device_name("a\nb"));
         assert!(!valid_device_name("a\tb"));
+    }
+
+    /// headless 预览：验证无「返回设置」文字按钮、刷新图标在右上角。
+    #[test]
+    fn remote_layout_preview_png() {
+        use neosonia_core::TrustedDevice;
+        use neosonia_core::config::{Paths, Settings};
+        let mut st = AppState::new(
+            Paths::from_root("C:/tmp/neosonia-remote-preview"),
+            Settings::default(),
+        );
+        st.remote.enabled = true;
+        // 让界面里的开关/状态与截图一致（draft 是 UI 的即时值）。
+        if let Some(v) = st.draft.pointer_mut("/remote/enabled") {
+            *v = serde_json::Value::Bool(true);
+        }
+        st.remote.url = "http://192.168.1.23:8787/?code=12345678".into();
+        st.remote.code = "12345678".into();
+        st.remote.expires_at_ms = neosonia_core::util::now_ms() + 8 * 60_000;
+        st.remote.status = "局域网服务已启用".into();
+        st.remote.devices = vec![
+            TrustedDevice {
+                id: "dev-1".into(),
+                name: "客厅 iPad".into(),
+                user_agent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) Safari/604.1".into(),
+                last_addr: "192.168.1.42".into(),
+                created_at_ms: neosonia_core::util::now_ms() - 86_400_000,
+                last_seen_ms: neosonia_core::util::now_ms() - 61_000,
+                online: true,
+            },
+            TrustedDevice {
+                id: "dev-2".into(),
+                name: String::new(),
+                user_agent: "Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/126.0".into(),
+                last_addr: "192.168.1.51".into(),
+                created_at_ms: neosonia_core::util::now_ms() - 2 * 86_400_000,
+                last_seen_ms: neosonia_core::util::now_ms() - 3_600_000,
+                online: false,
+            },
+        ];
+
+        let theme = crate::theme::nova_theme(neosonia_core::config::ThemeMode::Dark, true, 1.0);
+        let c = crate::theme::colors(&theme);
+        let mut fonts = Fonts::with_system();
+        let img = fenestra::shell::render_element_with(
+            view(&st, &c),
+            &theme,
+            (424, 1200),
+            &mut fonts,
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../logs/ui/ui-remote-v091.png");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        img.save(&path).expect("save remote preview png");
+        eprintln!("remote preview: {}", path.display());
     }
 }

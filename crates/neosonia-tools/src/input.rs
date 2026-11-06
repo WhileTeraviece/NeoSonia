@@ -22,6 +22,7 @@ pub fn register(reg: &ToolRegistry) {
     reg.register(Arc::new(MouseMove));
     reg.register(Arc::new(MouseClick));
     reg.register(Arc::new(MouseClickSequence));
+    reg.register(Arc::new(MouseGraph));
     reg.register(Arc::new(MousePress));
     reg.register(Arc::new(MouseRelease));
     reg.register(Arc::new(MouseDrag));
@@ -743,6 +744,642 @@ async fn mouse_click_sequence(ctx: &ToolCtx, args: Value) -> ToolOutcome {
     .await;
     match result {
         Ok(message) => ToolOutcome::ok(message).with_display(display),
+        Err(e) => ToolOutcome::err(e),
+    }
+}
+
+// ============================================================
+// mouse_graph：按 y=f(x) 曲线移动鼠标
+// ============================================================
+
+/// 曲线表达式 AST（x 为自变量）。
+#[derive(Clone, Debug, PartialEq)]
+enum GraphExpr {
+    Num(f64),
+    X,
+    Neg(Box<GraphExpr>),
+    Add(Box<GraphExpr>, Box<GraphExpr>),
+    Sub(Box<GraphExpr>, Box<GraphExpr>),
+    Mul(Box<GraphExpr>, Box<GraphExpr>),
+    Div(Box<GraphExpr>, Box<GraphExpr>),
+    Pow(Box<GraphExpr>, Box<GraphExpr>),
+    Func(GraphFunc, Vec<GraphExpr>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphFunc {
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Sqrt,
+    Abs,
+    Exp,
+    Ln,
+    Log,
+    Floor,
+    Ceil,
+    Round,
+    Min,
+    Max,
+}
+
+impl GraphFunc {
+    fn from_name(name: &str) -> Option<(GraphFunc, usize)> {
+        // (函数, 参数个数)
+        Some(match name {
+            "sin" => (GraphFunc::Sin, 1),
+            "cos" => (GraphFunc::Cos, 1),
+            "tan" => (GraphFunc::Tan, 1),
+            "asin" => (GraphFunc::Asin, 1),
+            "acos" => (GraphFunc::Acos, 1),
+            "atan" => (GraphFunc::Atan, 1),
+            "sqrt" => (GraphFunc::Sqrt, 1),
+            "abs" => (GraphFunc::Abs, 1),
+            "exp" => (GraphFunc::Exp, 1),
+            "ln" => (GraphFunc::Ln, 1),
+            "log" => (GraphFunc::Log, 1),
+            "floor" => (GraphFunc::Floor, 1),
+            "ceil" => (GraphFunc::Ceil, 1),
+            "round" => (GraphFunc::Round, 1),
+            "min" => (GraphFunc::Min, 2),
+            "max" => (GraphFunc::Max, 2),
+            _ => return None,
+        })
+    }
+
+    fn eval(self, args: &[f64]) -> f64 {
+        match self {
+            GraphFunc::Sin => args[0].sin(),
+            GraphFunc::Cos => args[0].cos(),
+            GraphFunc::Tan => args[0].tan(),
+            GraphFunc::Asin => args[0].asin(),
+            GraphFunc::Acos => args[0].acos(),
+            GraphFunc::Atan => args[0].atan(),
+            GraphFunc::Sqrt => args[0].sqrt(),
+            GraphFunc::Abs => args[0].abs(),
+            GraphFunc::Exp => args[0].exp(),
+            GraphFunc::Ln => args[0].ln(),
+            GraphFunc::Log => args[0].log10(),
+            GraphFunc::Floor => args[0].floor(),
+            GraphFunc::Ceil => args[0].ceil(),
+            GraphFunc::Round => args[0].round(),
+            GraphFunc::Min => args[0].min(args[1]),
+            GraphFunc::Max => args[0].max(args[1]),
+        }
+    }
+}
+
+/// 递归下降表达式解析器（不依赖任何 crate）。
+struct GraphParser {
+    chars: Vec<char>,
+    pos: usize,
+}
+
+impl GraphParser {
+    fn new(src: &str) -> Self {
+        Self {
+            chars: src.chars().collect(),
+            pos: 0,
+        }
+    }
+
+    fn parse(src: &str) -> Result<GraphExpr, String> {
+        let mut parser = Self::new(src);
+        let expr = parser.parse_expr()?;
+        parser.skip_ws();
+        if parser.pos < parser.chars.len() {
+            return Err(parser.error("表达式末尾有多余字符"));
+        }
+        Ok(expr)
+    }
+
+    fn rest(&self) -> String {
+        self.chars[self.pos.min(self.chars.len())..]
+            .iter()
+            .collect()
+    }
+
+    fn error(&self, message: impl Into<String>) -> String {
+        format!(
+            "{}（位置 {}，剩余：{:?}）",
+            message.into(),
+            self.pos,
+            truncate_chars(&self.rest(), 30)
+        )
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(' ' | '\t' | '\r' | '\n')) {
+            self.pos += 1;
+        }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn eat(&mut self, expected: char) -> Result<(), String> {
+        self.skip_ws();
+        if self.peek() == Some(expected) {
+            self.pos += 1;
+            Ok(())
+        } else {
+            Err(self.error(format!("缺少 {expected:?}")))
+        }
+    }
+
+    fn parse_expr(&mut self) -> Result<GraphExpr, String> {
+        let mut left = self.parse_term()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some('+') => {
+                    self.pos += 1;
+                    let right = self.parse_term()?;
+                    left = GraphExpr::Add(Box::new(left), Box::new(right));
+                }
+                Some('-') => {
+                    self.pos += 1;
+                    let right = self.parse_term()?;
+                    left = GraphExpr::Sub(Box::new(left), Box::new(right));
+                }
+                _ => return Ok(left),
+            }
+        }
+    }
+
+    fn parse_term(&mut self) -> Result<GraphExpr, String> {
+        let mut left = self.parse_unary()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some('*') => {
+                    self.pos += 1;
+                    let right = self.parse_unary()?;
+                    left = GraphExpr::Mul(Box::new(left), Box::new(right));
+                }
+                Some('/') => {
+                    self.pos += 1;
+                    let right = self.parse_unary()?;
+                    left = GraphExpr::Div(Box::new(left), Box::new(right));
+                }
+                _ => return Ok(left),
+            }
+        }
+    }
+
+    fn parse_unary(&mut self) -> Result<GraphExpr, String> {
+        self.skip_ws();
+        if self.peek() == Some('-') {
+            self.pos += 1;
+            let inner = self.parse_unary()?;
+            return Ok(GraphExpr::Neg(Box::new(inner)));
+        }
+        if self.peek() == Some('+') {
+            self.pos += 1;
+            return self.parse_unary();
+        }
+        self.parse_power()
+    }
+
+    fn parse_power(&mut self) -> Result<GraphExpr, String> {
+        let base = self.parse_primary()?;
+        self.skip_ws();
+        if self.peek() == Some('^') {
+            self.pos += 1;
+            // 右结合 + 允许 x^-2
+            let exponent = self.parse_unary()?;
+            return Ok(GraphExpr::Pow(Box::new(base), Box::new(exponent)));
+        }
+        Ok(base)
+    }
+
+    fn parse_primary(&mut self) -> Result<GraphExpr, String> {
+        self.skip_ws();
+        match self.peek() {
+            Some('(') => {
+                self.pos += 1;
+                let inner = self.parse_expr()?;
+                self.eat(')')?;
+                Ok(inner)
+            }
+            Some(ch) if ch.is_ascii_digit() || ch == '.' => self.parse_number(),
+            Some(ch) if ch.is_ascii_alphabetic() => {
+                let start = self.pos;
+                while matches!(self.peek(), Some(c) if c.is_ascii_alphanumeric() || c == '_') {
+                    self.pos += 1;
+                }
+                let name: String = self.chars[start..self.pos].iter().collect();
+                self.skip_ws();
+                if self.peek() == Some('(') {
+                    let (func, arity) = GraphFunc::from_name(&name.to_ascii_lowercase())
+                        .ok_or_else(|| self.error(format!("不认识的函数：{name:?}")))?;
+                    self.pos += 1;
+                    let mut args: Vec<GraphExpr> = Vec::new();
+                    self.skip_ws();
+                    if self.peek() == Some(')') {
+                        return Err(self.error(format!("函数 {name} 需要 {arity} 个参数")));
+                    }
+                    loop {
+                        args.push(self.parse_expr()?);
+                        self.skip_ws();
+                        if self.peek() == Some(',') {
+                            self.pos += 1;
+                            continue;
+                        }
+                        break;
+                    }
+                    self.eat(')')?;
+                    if args.len() != arity {
+                        return Err(self.error(format!(
+                            "函数 {name} 需要 {arity} 个参数，实际 {} 个",
+                            args.len()
+                        )));
+                    }
+                    Ok(GraphExpr::Func(func, args))
+                } else {
+                    match name.to_ascii_lowercase().as_str() {
+                        "x" => Ok(GraphExpr::X),
+                        "pi" => Ok(GraphExpr::Num(std::f64::consts::PI)),
+                        "e" => Ok(GraphExpr::Num(std::f64::consts::E)),
+                        other => Err(self.error(format!("不认识的变量/常量：{other:?}"))),
+                    }
+                }
+            }
+            _ => Err(self.error("缺少数字、x、pi/e 或函数调用")),
+        }
+    }
+
+    fn parse_number(&mut self) -> Result<GraphExpr, String> {
+        let start = self.pos;
+        let mut seen_dot = false;
+        let mut digits = 0usize;
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_digit() {
+                digits += 1;
+                self.pos += 1;
+            } else if ch == '.' && !seen_dot {
+                seen_dot = true;
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if digits == 0 {
+            return Err(self.error("数字格式错误"));
+        }
+        let text: String = self.chars[start..self.pos].iter().collect();
+        text.parse::<f64>()
+            .map(GraphExpr::Num)
+            .map_err(|_| self.error(format!("无法解析数字：{text:?}")))
+    }
+}
+
+fn parse_graph_expr(src: &str) -> Result<GraphExpr, String> {
+    if src.trim().is_empty() {
+        return Err("缺少必填参数 expr（例如 \"sin(x)\" 或 \"x^2\"）。".to_string());
+    }
+    GraphParser::parse(src)
+}
+
+/// 求值：除零/非法运算是 f64 的 inf/NaN，由调用方跳过。
+fn eval_graph_expr(expr: &GraphExpr, x: f64) -> f64 {
+    match expr {
+        GraphExpr::Num(value) => *value,
+        GraphExpr::X => x,
+        GraphExpr::Neg(inner) => -eval_graph_expr(inner, x),
+        GraphExpr::Add(a, b) => eval_graph_expr(a, x) + eval_graph_expr(b, x),
+        GraphExpr::Sub(a, b) => eval_graph_expr(a, x) - eval_graph_expr(b, x),
+        GraphExpr::Mul(a, b) => eval_graph_expr(a, x) * eval_graph_expr(b, x),
+        GraphExpr::Div(a, b) => eval_graph_expr(a, x) / eval_graph_expr(b, x),
+        GraphExpr::Pow(a, b) => eval_graph_expr(a, x).powf(eval_graph_expr(b, x)),
+        GraphExpr::Func(func, args) => {
+            let values: Vec<f64> = args.iter().map(|arg| eval_graph_expr(arg, x)).collect();
+            func.eval(&values)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphButton {
+    None,
+    Left,
+    Right,
+}
+
+impl GraphButton {
+    fn parse(raw: Option<&str>) -> Result<GraphButton, String> {
+        match raw.map(|value| value.trim().to_ascii_lowercase()) {
+            None => Ok(GraphButton::None),
+            Some(value) if value.is_empty() || value == "none" => Ok(GraphButton::None),
+            Some(value) if value == "left" => Ok(GraphButton::Left),
+            Some(value) if value == "right" => Ok(GraphButton::Right),
+            Some(other) => Err(format!(
+                "button 只能是 none / left / right，收到 {other:?}。"
+            )),
+        }
+    }
+
+    fn to_enigo(self) -> Option<Button> {
+        match self {
+            GraphButton::None => None,
+            GraphButton::Left => Some(Button::Left),
+            GraphButton::Right => Some(Button::Right),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            GraphButton::None => "none（不按键）",
+            GraphButton::Left => "left（左键按住）",
+            GraphButton::Right => "right（右键按住）",
+        }
+    }
+}
+
+/// 曲线采样参数（已校验）。
+struct GraphParams {
+    x_min: f64,
+    x_max: f64,
+    samples: usize,
+    origin: (i32, i32),
+    scale: (f64, f64),
+    duration_ms: u64,
+    button: GraphButton,
+    dry_run: bool,
+}
+
+fn f64_arg_required(args: &Value, key: &str) -> Result<f64, String> {
+    match args.get(key) {
+        Some(Value::Number(n)) => n
+            .as_f64()
+            .ok_or_else(|| format!("参数 {key} 不是合法数字。")),
+        Some(Value::String(s)) => s
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| format!("参数 {key} 不是合法数字：{s:?}。")),
+        _ => Err(format!("缺少必填参数 {key}（数值）。")),
+    }
+}
+
+/// 解析可选 {x,y} 对象；缺省返回 None。
+fn parse_xy_pair(value: Option<&Value>, name: &str) -> Result<Option<(f64, f64)>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{name} 必须是对象，例如 {{\"x\":0,\"y\":0}}。"))?;
+    let get = |key: &str| -> Option<f64> {
+        match object.get(key) {
+            Some(Value::Number(n)) => n.as_f64(),
+            Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
+            _ => None,
+        }
+    };
+    let x = get("x").ok_or_else(|| format!("{name}.x 缺失或不是数字。"))?;
+    let y = get("y").ok_or_else(|| format!("{name}.y 缺失或不是数字。"))?;
+    if !x.is_finite() || !y.is_finite() {
+        return Err(format!("{name}.x/y 必须是有限数字。"));
+    }
+    Ok(Some((x, y)))
+}
+
+fn parse_graph_params(args: &Value, origin: (i32, i32)) -> Result<GraphParams, String> {
+    let x_min = f64_arg_required(args, "x_min")?;
+    let x_max = f64_arg_required(args, "x_max")?;
+    if !x_min.is_finite() || !x_max.is_finite() {
+        return Err("x_min / x_max 必须是有限数字。".to_string());
+    }
+    if x_min >= x_max {
+        return Err(format!(
+            "x_min 必须小于 x_max（当前 x_min={x_min}, x_max={x_max}）。"
+        ));
+    }
+    let span = x_max - x_min;
+    if span > 10_000.0 {
+        return Err(format!(
+            "定义域跨度不能超过 10000（当前 {span:.3}）；请缩小 x_min..x_max。"
+        ));
+    }
+    let samples = arg_u64(args, "samples", 120).clamp(2, 2000) as usize;
+    let origin = match parse_xy_pair(args.get("origin"), "origin")? {
+        Some((x, y)) => (x.round() as i32, y.round() as i32),
+        None => origin,
+    };
+    let scale = match parse_xy_pair(args.get("scale"), "scale")? {
+        Some((x, y)) => (x, y),
+        None => (1.0, 1.0),
+    };
+    let duration_ms = arg_u64(args, "duration_ms", 800).clamp(50, 10_000);
+    let button = GraphButton::parse(arg_str(args, "button").as_deref())?;
+    let dry_run = arg_bool(args, "dry_run", false);
+    Ok(GraphParams {
+        x_min,
+        x_max,
+        samples,
+        origin,
+        scale,
+        duration_ms,
+        button,
+        dry_run,
+    })
+}
+
+/// 采样曲线并转换成屏幕坐标；返回 (屏幕点列表, 跳过点数)。
+fn sample_graph_points(expr: &GraphExpr, params: &GraphParams) -> (Vec<(i32, i32)>, usize) {
+    let mut points: Vec<(i32, i32)> = Vec::new();
+    let mut skipped = 0usize;
+    let denominator = (params.samples.saturating_sub(1)).max(1) as f64;
+    for index in 0..params.samples {
+        let t = index as f64 / denominator;
+        let x = params.x_min + (params.x_max - params.x_min) * t;
+        let y = eval_graph_expr(expr, x);
+        let screen_x = params.origin.0 as f64 + x * params.scale.0;
+        let screen_y = params.origin.1 as f64 - y * params.scale.1;
+        if !y.is_finite() || !screen_x.is_finite() || !screen_y.is_finite() {
+            skipped += 1;
+            continue;
+        }
+        if screen_x < i32::MIN as f64
+            || screen_x > i32::MAX as f64
+            || screen_y < i32::MIN as f64
+            || screen_y > i32::MAX as f64
+        {
+            skipped += 1;
+            continue;
+        }
+        points.push((screen_x.round() as i32, screen_y.round() as i32));
+    }
+    (points, skipped)
+}
+
+async fn current_cursor_position() -> Result<(i32, i32), String> {
+    tokio::task::spawn_blocking(|| -> Result<(i32, i32), String> {
+        let enigo = Enigo::new(&EnigoSettings::default())
+            .map_err(|e| format!("无法初始化输入模拟（{e}）。请确认当前会话有可交互的桌面。"))?;
+        enigo
+            .location()
+            .map_err(|e| format!("读取当前鼠标位置失败：{e}"))
+    })
+    .await
+    .map_err(|e| format!("读取鼠标位置任务异常：{e}"))?
+}
+
+fn render_graph_dry_run(
+    expr_src: &str,
+    params: &GraphParams,
+    points: &[(i32, i32)],
+    skipped: usize,
+) -> String {
+    let mut out = format!(
+        "[ok] mouse_graph（dry_run=true，只解析和采样，没有移动鼠标）\n\
+         表达式：{expr_src}\n\
+         定义域：x ∈ [{}, {}]\n\
+         采样数：{}（跳过 NaN/inf：{}）\n\
+         起点：({}, {})\n\
+         终点：({}, {})\n\
+         原点：({}, {})，scale=({}, {})\n\
+         dry_run：true\n",
+        params.x_min,
+        params.x_max,
+        params.samples,
+        skipped,
+        points[0].0,
+        points[0].1,
+        points[points.len() - 1].0,
+        points[points.len() - 1].1,
+        params.origin.0,
+        params.origin.1,
+        params.scale.0,
+        params.scale.1
+    );
+    if points.len() > 1 {
+        let first = points[0];
+        let last = points[points.len() - 1];
+        out.push_str(&format!(
+            "位移：dx={} dy={}\n",
+            last.0 - first.0,
+            last.1 - first.1
+        ));
+    }
+    out.push_str("坐标列表：\n");
+    let limit = points.len().min(100);
+    for (index, (x, y)) in points.iter().take(limit).enumerate() {
+        out.push_str(&format!("{}. ({x}, {y})\n", index + 1));
+    }
+    if points.len() > limit {
+        out.push_str(&format!(
+            "…（还有 {} 个点未列出）\n",
+            points.len() - limit
+        ));
+    }
+    out
+}
+
+async fn mouse_graph(ctx: &ToolCtx, args: Value) -> ToolOutcome {
+    if let Err(e) = input_allowed(ctx) {
+        return e;
+    }
+    let expr_src = match arg_str_req(&args, "expr") {
+        Ok(value) => value,
+        Err(e) => return e,
+    };
+    let expr = match parse_graph_expr(&expr_src) {
+        Ok(expr) => expr,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    // origin 缺省 = 当前鼠标位置（只读查询；dry_run 也允许缺省，但测试会显式传）
+    let default_origin = match parse_xy_pair(args.get("origin"), "origin") {
+        Ok(Some((x, y))) => (x.round() as i32, y.round() as i32),
+        Ok(None) => match current_cursor_position().await {
+            Ok(position) => position,
+            Err(e) => return ToolOutcome::err(e),
+        },
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let params = match parse_graph_params(&args, default_origin) {
+        Ok(params) => params,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let (points, skipped) = sample_graph_points(&expr, &params);
+    if points.is_empty() {
+        return ToolOutcome::err(
+            "曲线在定义域内没有有效采样点（全部为 NaN/inf）；请检查表达式、定义域或 scale。"
+                .to_string(),
+        );
+    }
+    if params.dry_run {
+        let content = render_graph_dry_run(&expr_src, &params, &points, skipped);
+        return ToolOutcome::ok(content)
+            .with_display(format!("dry_run：{} 个点", points.len()));
+    }
+    if ctx.is_cancelled() {
+        return ToolOutcome::err("已取消：用户中断，未移动鼠标。".to_string());
+    }
+
+    let point_count = points.len();
+    let duration_ms = params.duration_ms;
+    let button = params.button.to_enigo();
+    let per_step = Duration::from_millis((duration_ms / point_count.max(1) as u64).max(1));
+    let ctx_for_loop = ctx.clone();
+    let display = format!("曲线移动 {point_count} 个点");
+    let result = enigo_blocking(move |enigo| {
+        let mut pressed = false;
+        let mut was_held = false;
+        let inner = (|| -> Result<String, String> {
+            if let Some(mouse_button) = button {
+                was_held = held_lock().mouse_is_held(mouse_button);
+                enigo
+                    .button(mouse_button, Direction::Press)
+                    .map_err(|e| format!("按下鼠标按键失败：{e}"))?;
+                pressed = true;
+                if !was_held {
+                    held_lock().press_mouse(mouse_button);
+                }
+            }
+            for (index, (x, y)) in points.iter().enumerate() {
+                if ctx_for_loop.is_cancelled() {
+                    return Err(format!(
+                        "已取消：鼠标曲线移动到第 {}/{point_count} 个采样点时被用户中断。",
+                        index + 1
+                    ));
+                }
+                enigo
+                    .move_mouse(*x, *y, Coordinate::Abs)
+                    .map_err(|e| format!("移动到 ({x}, {y}) 失败：{e}"))?;
+                std::thread::sleep(per_step);
+            }
+            Ok(format!(
+                "[ok] 鼠标曲线移动完成\n表达式：{expr_src}\n定义域：x ∈ [{}, {}]\n采样数：{point_count}（跳过 NaN/inf：{skipped}）\n起点：({}, {})\n终点：({}, {})\n按键：{}\n时长：{duration_ms}ms",
+                params.x_min,
+                params.x_max,
+                points[0].0,
+                points[0].1,
+                points[point_count - 1].0,
+                points[point_count - 1].1,
+                params.button.label()
+            ))
+        })();
+        if pressed {
+            if let Some(mouse_button) = button {
+                let _ = enigo.button(mouse_button, Direction::Release);
+                if !was_held {
+                    held_lock().release_mouse(mouse_button);
+                }
+            }
+        }
+        inner
+    })
+    .await;
+    match result {
+        Ok(content) => ToolOutcome::ok(content).with_display(display),
         Err(e) => ToolOutcome::err(e),
     }
 }
@@ -1538,6 +2175,42 @@ tool_impl!(
 );
 
 tool_impl!(
+    MouseGraph,
+    "mouse_graph",
+    "按 y=f(x) 曲线移动鼠标（用于画图、演示轨迹、沿曲线拖拽）。\n\
+     expr 只含 x，支持 + - * / ^、括号、一元负号、小数、pi/e；\
+     函数：sin cos tan asin acos atan sqrt abs exp ln log(以 10 为底) floor ceil round min(a,b) max(a,b)。\n\
+     坐标：screen_x = origin.x + x * scale.x，screen_y = origin.y - f(x) * scale.y（y 轴向上）；\
+     origin 默认当前鼠标位置，scale 默认 1.0。\n\
+     采样点里 NaN/inf 会自动跳过；button=left/right 时按住到结束（取消也会释放）。\n\
+     dry_run=true 只解析+采样并返回坐标列表，不移动鼠标（推荐先用它确认轨迹）。",
+    json!({
+        "type": "object",
+        "properties": {
+            "expr": {"type": "string", "description": "只含 x 的表达式，例如 \"sin(x)\"、\"x^2/10\"、\"2*pi*x\""},
+            "x_min": {"type": "number", "description": "定义域起点（必须 < x_max）"},
+            "x_max": {"type": "number", "description": "定义域终点（跨度 <= 10000）"},
+            "samples": {"type": "integer", "description": "采样点数，默认 120，范围 2-2000"},
+            "origin": {
+                "type": "object",
+                "description": "坐标原点（屏幕物理像素），默认当前鼠标位置",
+                "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}
+            },
+            "scale": {
+                "type": "object",
+                "description": "x/y 缩放（像素/单位），默认 1.0",
+                "properties": {"x": {"type": "number"}, "y": {"type": "number"}}
+            },
+            "duration_ms": {"type": "integer", "description": "整个曲线移动的时长毫秒，默认 800，范围 50-10000"},
+            "button": {"type": "string", "enum": ["none", "left", "right"], "description": "移动时按住的鼠标键，默认 none"},
+            "dry_run": {"type": "boolean", "description": "只解析/采样并返回坐标列表，不真正移动鼠标（默认 false）"}
+        },
+        "required": ["expr", "x_min", "x_max"]
+    }),
+    mouse_graph
+);
+
+tool_impl!(
     MouseDrag,
     "mouse_drag",
     "按住鼠标从起点拖到终点（默认物理像素）。常用于拖动文件、选中文本、拖滚动条。\
@@ -2108,5 +2781,229 @@ mod tests {
             release_targets(Some(Button::Left), &[]),
             vec![Button::Left]
         );
+    }
+
+    #[test]
+    fn graph_expression_parser() {
+        fn eval(src: &str, x: f64) -> f64 {
+            let expr = parse_graph_expr(src).expect("表达式应能解析");
+            eval_graph_expr(&expr, x)
+        }
+        // 基本运算与优先级
+        assert!((eval("x^2", 3.0) - 9.0).abs() < 1e-12);
+        assert!((eval("-x^2", 2.0) + 4.0).abs() < 1e-12, "-x^2 应为 -(x^2)");
+        assert!((eval("2+3*4", 0.0) - 14.0).abs() < 1e-12);
+        assert!((eval("(2+3)*4", 0.0) - 20.0).abs() < 1e-12);
+        assert!((eval("2^3^2", 0.0) - 512.0).abs() < 1e-12, "^ 应右结合");
+        assert!((eval("2^-2", 0.0) - 0.25).abs() < 1e-12);
+        assert!((eval("x/2", 9.0) - 4.5).abs() < 1e-12);
+        // 常量与函数
+        assert!((eval("sin(x)", std::f64::consts::FRAC_PI_2) - 1.0).abs() < 1e-12);
+        assert!((eval("2*pi", 0.0) - std::f64::consts::TAU).abs() < 1e-12);
+        assert!((eval("e", 0.0) - std::f64::consts::E).abs() < 1e-12);
+        assert!((eval("cos(0)+tan(0)", 0.0) - 1.0).abs() < 1e-12);
+        assert!((eval("asin(1)+acos(0)+atan(0)", 0.0) - std::f64::consts::PI).abs() < 1e-9);
+        assert!((eval("sqrt(9)+exp(0)+ln(1)+log(100)", 0.0) - 6.0).abs() < 1e-12);
+        assert!((eval("abs(-5)+floor(2.7)+ceil(2.1)+round(2.5)", 0.0) - 13.0).abs() < 1e-12);
+        assert!((eval("min(3,4)+max(1,5)", 0.0) - 8.0).abs() < 1e-12);
+        assert!((eval("min(x, 10)", 3.0) - 3.0).abs() < 1e-12);
+        // 除零 → inf；负数开方 → NaN
+        assert!(eval("1/x", 0.0).is_infinite(), "除零应得到 inf");
+        assert!(eval("sqrt(x)", -1.0).is_nan(), "sqrt(-1) 应是 NaN");
+        assert!(eval("ln(x)", -1.0).is_nan(), "ln(-1) 应是 NaN");
+        // 非法表达式
+        for bad in [
+            "",
+            "   ",
+            "x+",
+            "sin(",
+            "sin()",
+            "sin(1,2)",
+            "foo(x)",
+            "x @ 2",
+            "2..3",
+            "x 2",
+            "()",
+        ] {
+            assert!(parse_graph_expr(bad).is_err(), "非法表达式应报错: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn graph_params_validation() {
+        let base = |extra: Value| {
+            let mut value = json!({"x_min": 0.0, "x_max": 10.0});
+            if let (Some(target), Some(source)) = (value.as_object_mut(), extra.as_object()) {
+                for (key, item) in source {
+                    target.insert(key.clone(), item.clone());
+                }
+            }
+            value
+        };
+        let params = parse_graph_params(&base(json!({})), (100, 100)).unwrap();
+        assert_eq!(params.samples, 120);
+        assert_eq!(params.duration_ms, 800);
+        assert_eq!(params.button, GraphButton::None);
+        assert_eq!(params.origin, (100, 100));
+        assert_eq!(params.scale, (1.0, 1.0));
+        assert!(!params.dry_run);
+
+        // samples / duration 边界 clamp
+        let params = parse_graph_params(&base(json!({"samples": 1, "duration_ms": 1})), (0, 0)).unwrap();
+        assert_eq!(params.samples, 2);
+        assert_eq!(params.duration_ms, 50);
+        let params = parse_graph_params(
+            &base(json!({"samples": 99999, "duration_ms": 999999})),
+            (0, 0),
+        )
+        .unwrap();
+        assert_eq!(params.samples, 2000);
+        assert_eq!(params.duration_ms, 10000);
+
+        // origin/scale/button 解析
+        let params = parse_graph_params(
+            &base(json!({
+                "origin": {"x": 50, "y": 60},
+                "scale": {"x": 2.5, "y": 0.5},
+                "button": "LEFT",
+                "dry_run": true
+            })),
+            (0, 0),
+        )
+        .unwrap();
+        assert_eq!(params.origin, (50, 60));
+        assert_eq!(params.scale, (2.5, 0.5));
+        assert_eq!(params.button, GraphButton::Left);
+        assert!(params.dry_run);
+
+        // 校验失败
+        assert!(parse_graph_params(&json!({"x_max": 10.0}), (0, 0)).is_err(), "缺 x_min");
+        assert!(parse_graph_params(&json!({"x_min": 0.0}), (0, 0)).is_err(), "缺 x_max");
+        assert!(
+            parse_graph_params(&json!({"x_min": 10.0, "x_max": 10.0}), (0, 0)).is_err(),
+            "x_min 不能等于 x_max"
+        );
+        assert!(parse_graph_params(&json!({"x_min": 10.0, "x_max": 0.0}), (0, 0)).is_err());
+        assert!(
+            parse_graph_params(&json!({"x_min": 0.0, "x_max": 10001.0}), (0, 0)).is_err(),
+            "跨度超过 10000 应报错"
+        );
+        assert!(
+            parse_graph_params(&json!({"x_min": 0.0, "x_max": 10000.0}), (0, 0)).is_ok(),
+            "跨度正好 10000 应允许"
+        );
+        assert!(
+            parse_graph_params(&base(json!({"button": "middle"})), (0, 0)).is_err(),
+            "未知 button 应报错"
+        );
+        assert!(
+            parse_graph_params(&base(json!({"origin": {"x": 1}})), (0, 0)).is_err(),
+            "origin 缺 y 应报错"
+        );
+    }
+
+    #[test]
+    fn graph_sampling_axis_and_skips() {
+        let expr = parse_graph_expr("x").unwrap();
+        let params = GraphParams {
+            x_min: 0.0,
+            x_max: 10.0,
+            samples: 3,
+            origin: (100, 200),
+            scale: (2.0, 3.0),
+            duration_ms: 800,
+            button: GraphButton::None,
+            dry_run: true,
+        };
+        let (points, skipped) = sample_graph_points(&expr, &params);
+        // x=0/5/10；screen_x=100+x*2，screen_y=200-f(x)*3（y 轴向上）
+        assert_eq!(points, vec![(100, 200), (110, 185), (120, 170)]);
+        assert_eq!(skipped, 0);
+
+        // NaN（sqrt 负区间）应跳过
+        let expr = parse_graph_expr("sqrt(x)").unwrap();
+        let params = GraphParams {
+            x_min: -1.0,
+            x_max: 1.0,
+            samples: 5,
+            origin: (0, 0),
+            scale: (1.0, 1.0),
+            duration_ms: 100,
+            button: GraphButton::None,
+            dry_run: true,
+        };
+        let (points, skipped) = sample_graph_points(&expr, &params);
+        assert_eq!(skipped, 2, "x<0 的 sqrt 是 NaN，应跳过");
+        assert_eq!(points.len(), 3);
+
+        // inf（1/x 在 x=0）应跳过
+        let expr = parse_graph_expr("1/x").unwrap();
+        let params = GraphParams {
+            x_min: -1.0,
+            x_max: 1.0,
+            samples: 3,
+            origin: (0, 0),
+            scale: (1.0, 1.0),
+            duration_ms: 100,
+            button: GraphButton::None,
+            dry_run: true,
+        };
+        let (points, skipped) = sample_graph_points(&expr, &params);
+        assert_eq!(skipped, 1, "x=0 时 1/x 是 inf，应跳过");
+        assert_eq!(points.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn mouse_graph_dry_run_only() {
+        let root = crate::test_support::temp_root("mouse-graph");
+        let (ctx, _host) = crate::test_support::fake_ctx(&root);
+        // dry_run：不移动、不按键，只返回坐标列表
+        let out = mouse_graph(
+            &ctx,
+            json!({
+                "expr": "x",
+                "x_min": 0,
+                "x_max": 10,
+                "samples": 3,
+                "origin": {"x": 100, "y": 200},
+                "dry_run": true
+            }),
+        )
+        .await;
+        assert!(out.ok, "{}", out.content);
+        println!("mouse_graph dry_run:\n{}", out.content);
+        assert!(out.content.contains("dry_run：true"), "{}", out.content);
+        assert!(out.content.contains("表达式：x"), "{}", out.content);
+        assert!(out.content.contains("采样数：3"), "{}", out.content);
+        assert!(out.content.contains("起点：(100, 200)"), "{}", out.content);
+        assert!(out.content.contains("终点：(110, 190)"), "{}", out.content);
+        assert!(out.content.contains("跳过 NaN/inf：0"), "{}", out.content);
+        assert!(out.content.contains("(100, 200)") && out.content.contains("(110, 190)"), "{}", out.content);
+        // 1/x 除零 inf 点应跳过并体现在输出
+        let out = mouse_graph(
+            &ctx,
+            json!({
+                "expr": "1/x", "x_min": -1, "x_max": 1, "samples": 3,
+                "origin": {"x": 0, "y": 0}, "dry_run": true
+            }),
+        )
+        .await;
+        assert!(out.ok, "{}", out.content);
+        assert!(out.content.contains("跳过 NaN/inf：1"), "{}", out.content);
+        // 未知 button / 非法定义域 / 非法 expr
+        let bad_button = mouse_graph(
+            &ctx,
+            json!({"expr": "x", "x_min": 0, "x_max": 1, "origin": {"x": 0, "y": 0}, "button": "middle", "dry_run": true}),
+        )
+        .await;
+        assert!(!bad_button.ok);
+        let bad_domain = mouse_graph(
+            &ctx,
+            json!({"expr": "x", "x_min": 2, "x_max": 1, "origin": {"x": 0, "y": 0}, "dry_run": true}),
+        )
+        .await;
+        assert!(!bad_domain.ok);
+        let bad_expr = mouse_graph(&ctx, json!({"expr": "sin(", "x_min": 0, "x_max": 1, "dry_run": true})).await;
+        assert!(!bad_expr.ok);
     }
 }

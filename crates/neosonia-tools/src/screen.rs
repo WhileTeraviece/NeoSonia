@@ -1,4 +1,4 @@
-//! 屏幕工具：枚举显示器、截图（xcap）、主屏尺寸、屏幕度量。
+﻿//! 屏幕工具：枚举显示器、截图（xcap）、主屏尺寸、屏幕度量。
 //!
 //! 坐标约定：对外一律使用**物理像素**。`screenshot` 返回 `scale`，
 //! 逻辑坐标 = 物理坐标 / scale；`mouse_*` 支持 `logical: true` 时内部换算。
@@ -32,6 +32,7 @@ static CAPTURE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 pub fn register(reg: &ToolRegistry) {
     register_info(reg);
     reg.register(Arc::new(Screenshot));
+    reg.register(Arc::new(ScreenMark));
 }
 
 /// 只注册只读的屏幕信息工具（不允许截图/输入模拟时仍保留）。
@@ -1135,6 +1136,451 @@ async fn screenshot(ctx: &ToolCtx, args: Value) -> ToolOutcome {
 }
 
 // ============================================================
+// screen_mark：把屏幕坐标可视化标出来（Windows 透明置顶叠加层）
+// ============================================================
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MarkPoint {
+    x: i32,
+    y: i32,
+    label: String,
+}
+
+/// 叠加层窗口的绘制数据（窗口过程从全局状态读取）。
+#[derive(Clone, Debug)]
+struct MarkPayload {
+    origin_x: i32,
+    origin_y: i32,
+    width: u32,
+    height: u32,
+    points: Vec<MarkPoint>,
+}
+
+fn parse_mark_points(value: Option<&Value>) -> Result<Vec<MarkPoint>, String> {
+    let Some(value) = value else {
+        return Err(
+            "缺少必填参数 points（要标注的坐标数组，例如 [{\"x\":100,\"y\":200}]）。".to_string(),
+        );
+    };
+    let Some(array) = value.as_array() else {
+        return Err("points 必须是数组，例如 [{\"x\":100,\"y\":200}]。".to_string());
+    };
+    if array.is_empty() {
+        return Err("points 不能为空，至少给 1 个点。".to_string());
+    }
+    if array.len() > 32 {
+        return Err(format!(
+            "points 最多 32 个点（收到 {} 个）；点太多会看不清标注。",
+            array.len()
+        ));
+    }
+    let mut points = Vec::with_capacity(array.len());
+    for (index, item) in array.iter().enumerate() {
+        let position = index + 1;
+        let Some(object) = item.as_object() else {
+            return Err(format!("第 {position} 个点必须是对象（含 x、y）。"));
+        };
+        let number = |key: &str| -> Option<i64> {
+            match object.get(key) {
+                Some(Value::Number(n)) => n.as_i64(),
+                Some(Value::String(s)) => s.trim().parse::<i64>().ok(),
+                _ => None,
+            }
+        };
+        let x = number("x").ok_or_else(|| format!("第 {position} 个点缺少整数 x。"))?;
+        let y = number("y").ok_or_else(|| format!("第 {position} 个点缺少整数 y。"))?;
+        let label = object
+            .get("label")
+            .and_then(|value| value.as_str())
+            .map(|label| truncate_chars(label.trim(), 12))
+            .unwrap_or_default();
+        points.push(MarkPoint {
+            x: x.clamp(-1_000_000, 1_000_000) as i32,
+            y: y.clamp(-1_000_000, 1_000_000) as i32,
+            label,
+        });
+    }
+    Ok(points)
+}
+
+/// Windows 透明置顶叠加层：分层窗口 + GDI 绘制，按时长自动关闭。
+#[cfg(windows)]
+mod mark_overlay {
+    use super::{MarkPayload, set_physical_dpi_for_capture};
+    use parking_lot::Mutex;
+    use std::sync::{OnceLock, mpsc};
+    use std::time::Duration;
+
+    type WndProcFn = unsafe extern "system" fn(isize, u32, usize, isize) -> isize;
+
+    #[repr(C)]
+    struct WndClassW {
+        style: u32,
+        lpfn_wnd_proc: Option<WndProcFn>,
+        cb_cls_extra: i32,
+        cb_wnd_extra: i32,
+        h_instance: isize,
+        h_icon: isize,
+        h_cursor: isize,
+        hbr_background: isize,
+        lpsz_menu_name: *const u16,
+        lpsz_class_name: *const u16,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct MsgRaw {
+        hwnd: isize,
+        message: u32,
+        w_param: usize,
+        l_param: isize,
+        time: u32,
+        pt_x: i32,
+        pt_y: i32,
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn RegisterClassW(lp_wnd_class: *const WndClassW) -> u16;
+        fn CreateWindowExW(
+            ex_style: u32,
+            class_name: *const u16,
+            window_name: *const u16,
+            style: u32,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            parent: isize,
+            menu: isize,
+            instance: isize,
+            param: isize,
+        ) -> isize;
+        fn DefWindowProcW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> isize;
+        fn DestroyWindow(hwnd: isize) -> i32;
+        fn PostQuitMessage(exit_code: i32);
+        fn GetMessageW(
+            msg: *mut MsgRaw,
+            hwnd: isize,
+            filter_min: u32,
+            filter_max: u32,
+        ) -> i32;
+        fn TranslateMessage(msg: *const MsgRaw) -> i32;
+        fn DispatchMessageW(msg: *const MsgRaw) -> isize;
+        fn SetLayeredWindowAttributes(
+            hwnd: isize,
+            color_key: u32,
+            alpha: u8,
+            flags: u32,
+        ) -> i32;
+        fn ShowWindow(hwnd: isize, cmd_show: i32) -> i32;
+        fn UpdateWindow(hwnd: isize) -> i32;
+        fn SetTimer(hwnd: isize, id: usize, elapse_ms: u32, timer_proc: usize) -> usize;
+        fn KillTimer(hwnd: isize, id: usize) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(module_name: *const u16) -> isize;
+        fn GetLastError() -> u32;
+    }
+
+    const WS_POPUP: u32 = 0x8000_0000;
+    const WS_EX_LAYERED: u32 = 0x0008_0000;
+    const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
+    const WS_EX_TOPMOST: u32 = 0x0000_0008;
+    const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+    const LWA_COLORKEY: u32 = 0x0000_0001;
+    const SW_SHOWNOACTIVATE: i32 = 4;
+    const WM_PAINT: u32 = 0x000F;
+    const WM_TIMER: u32 = 0x0113;
+    const WM_DESTROY: u32 = 0x0002;
+    const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
+
+    static PAYLOAD: OnceLock<Mutex<Option<MarkPayload>>> = OnceLock::new();
+
+    fn payload() -> &'static Mutex<Option<MarkPayload>> {
+        PAYLOAD.get_or_init(|| Mutex::new(None))
+    }
+
+    fn utf16z(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// 在窗口 DC 上画十字 + 圆环 + 编号（黑底作为 color key 透明）。
+    fn paint(hwnd: isize) {
+        use windows::Win32::Foundation::{COLORREF, HWND, RECT};
+        use windows::Win32::Graphics::Gdi::{
+            BeginPaint, CreatePen, CreateSolidBrush, DeleteObject, Ellipse, EndPaint, FillRect,
+            HGDIOBJ, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID, SelectObject, SetBkMode, SetTextColor,
+            TRANSPARENT, TextOutW,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        unsafe {
+            let window = HWND(hwnd as *mut core::ffi::c_void);
+            let mut paint_struct = PAINTSTRUCT::default();
+            let hdc = BeginPaint(window, &mut paint_struct);
+            let black = CreateSolidBrush(COLORREF(0));
+            let mut client = RECT::default();
+            let _ = GetClientRect(window, &mut client);
+            FillRect(hdc, &client, black);
+
+            let snapshot: Option<MarkPayload> = payload().lock().clone();
+            if let Some(data) = snapshot {
+                if !data.points.is_empty() {
+                    // 红色十字 + 圆环（青色），黑色背景被 color key 抠成透明
+                    let cross = CreatePen(PS_SOLID, 2, COLORREF(0x0000_00FF));
+                    let ring = CreateSolidBrush(COLORREF(0x00FF_FF00));
+                    let old_pen = SelectObject(hdc, HGDIOBJ(cross.0));
+                    let old_brush = SelectObject(hdc, HGDIOBJ(ring.0));
+                    SetBkMode(hdc, TRANSPARENT);
+                    SetTextColor(hdc, COLORREF(0x00FF_FFFF));
+                    for (index, point) in data.points.iter().enumerate() {
+                        let cx = point.x - data.origin_x;
+                        let cy = point.y - data.origin_y;
+                        let _ = MoveToEx(hdc, cx - 28, cy, None);
+                        let _ = LineTo(hdc, cx + 28, cy);
+                        let _ = MoveToEx(hdc, cx, cy - 28, None);
+                        let _ = LineTo(hdc, cx, cy + 28);
+                        let _ = Ellipse(hdc, cx - 12, cy - 12, cx + 12, cy + 12);
+                        let text = if point.label.is_empty() {
+                            format!("{}", index + 1)
+                        } else {
+                            format!("{}.{}", index + 1, point.label)
+                        };
+                        let wide: Vec<u16> = text.encode_utf16().collect();
+                        let _ = TextOutW(hdc, cx + 16, cy - 8, &wide);
+                    }
+                    let _ = SelectObject(hdc, old_brush);
+                    let _ = SelectObject(hdc, old_pen);
+                    let _ = DeleteObject(HGDIOBJ(cross.0));
+                    let _ = DeleteObject(HGDIOBJ(ring.0));
+                }
+            }
+            let _ = DeleteObject(HGDIOBJ(black.0));
+            let _ = EndPaint(window, &paint_struct);
+        }
+    }
+
+    unsafe extern "system" fn mark_wnd_proc(
+        hwnd: isize,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize {
+        match msg {
+            WM_PAINT => {
+                paint(hwnd);
+                0
+            }
+            WM_TIMER => {
+                // 到时长：杀掉定时器并关窗（消息循环随后退出）
+                unsafe {
+                    let _ = KillTimer(hwnd, wparam);
+                    let _ = DestroyWindow(hwnd);
+                }
+                0
+            }
+            WM_DESTROY => {
+                unsafe { PostQuitMessage(0) };
+                0
+            }
+            _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        }
+    }
+
+    fn run_overlay(
+        payload_data: MarkPayload,
+        duration_ms: u32,
+        handshake: mpsc::Sender<Result<(), String>>,
+    ) -> Result<(), String> {
+        let _dpi = set_physical_dpi_for_capture();
+        // SAFETY: 下面都是标准 Win32 窗体/GDI 调用；字符串/结构体在调用期间有效；
+        // 绘制数据放在进程级 Mutex 里供窗口过程读取。
+        unsafe {
+            let instance = GetModuleHandleW(std::ptr::null());
+            if instance == 0 {
+                return Err("GetModuleHandleW 失败（拿不到模块句柄）。".to_string());
+            }
+            let class_name = utf16z("NeoSoniaScreenMark");
+            let wnd_class = WndClassW {
+                style: 0x0003, // CS_HREDRAW | CS_VREDRAW
+                lpfn_wnd_proc: Some(mark_wnd_proc),
+                cb_cls_extra: 0,
+                cb_wnd_extra: 0,
+                h_instance: instance,
+                h_icon: 0,
+                h_cursor: 0,
+                hbr_background: 0,
+                lpsz_menu_name: std::ptr::null(),
+                lpsz_class_name: class_name.as_ptr(),
+            };
+            if RegisterClassW(&wnd_class) == 0 {
+                let error = GetLastError();
+                if error != ERROR_CLASS_ALREADY_EXISTS {
+                    return Err(format!("RegisterClassW 失败（错误码 {error}）。"));
+                }
+            }
+            let title = utf16z("NeoSoniaScreenMark");
+            let hwnd = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                WS_POPUP,
+                payload_data.origin_x,
+                payload_data.origin_y,
+                payload_data.width as i32,
+                payload_data.height as i32,
+                0,
+                0,
+                instance,
+                0,
+            );
+            if hwnd == 0 {
+                return Err(format!(
+                    "CreateWindowExW 失败（错误码 {}）。",
+                    GetLastError()
+                ));
+            }
+            // 黑色（0）作为 color key 透明色；窗口整体不接收鼠标（WS_EX_TRANSPARENT）。
+            if SetLayeredWindowAttributes(hwnd, 0, 0, LWA_COLORKEY) == 0 {
+                let _ = DestroyWindow(hwnd);
+                return Err(
+                    "SetLayeredWindowAttributes 失败（无法创建透明叠加层，可能被安全软件拦截）。"
+                        .to_string(),
+                );
+            }
+            SetTimer(hwnd, 1, duration_ms, 0);
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            UpdateWindow(hwnd);
+            // 窗口已经显示成功才向工具返回：之前要等 10s 消息循环结束才回，
+            // 工具早超时，真正的建窗错误也被吞掉（用户看到"标注完成"但屏幕没标记）。
+            let _ = handshake.send(Ok(()));
+
+            let mut msg = MsgRaw::default();
+            loop {
+                let result = GetMessageW(&mut msg, 0, 0, 0);
+                if result == 0 || result == -1 {
+                    break;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        Ok(())
+    }
+
+    /// 创建叠加层并立即返回；线程在 duration_ms 后自动关闭窗口。
+    pub fn show(payload_data: MarkPayload, duration_ms: u32) -> Result<(), String> {
+        *payload().lock() = Some(payload_data.clone());
+        let (sender, receiver) = mpsc::channel::<Result<(), String>>();
+        std::thread::Builder::new()
+            .name("neosonia-screen-mark".to_string())
+            .spawn(move || {
+                if let Err(e) = run_overlay(payload_data, duration_ms, sender.clone()) {
+                    let _ = sender.send(Err(e));
+                }
+            })
+            .map_err(|e| format!("启动标注线程失败：{e}"))?;
+        // 等窗口创建结果：最多 800ms，避免工具调用被长时间阻塞；
+        // 超时视为"线程仍在创建"，不让工具失败。
+        match receiver.recv_timeout(Duration::from_millis(800)) {
+            Ok(result) => result,
+            Err(_) => Ok(()),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod mark_overlay {
+    use super::MarkPayload;
+
+    pub fn show(_payload: MarkPayload, _duration_ms: u32) -> Result<(), String> {
+        Err(
+            "screen_mark 目前只支持 Windows（需要 Win32 分层透明窗口 + GDI 绘制）；\
+             非 Windows 可用 dry_run=true 只计算坐标。"
+                .to_string(),
+        )
+    }
+}
+
+async fn screen_mark(ctx: &ToolCtx, args: Value) -> ToolOutcome {
+    let settings = ctx.settings();
+    if !settings.tools.allow_input_simulation {
+        return ToolOutcome::err(
+            "屏幕标注已在设置中关闭（tools.allow_input_simulation=false）。".to_string(),
+        );
+    }
+    let points = match parse_mark_points(args.get("points")) {
+        Ok(points) => points,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let duration_ms = arg_u64(&args, "duration_ms", 3000).clamp(500, 10_000) as u32;
+    let dry_run = arg_bool(&args, "dry_run", false);
+    let metas = match tokio::task::spawn_blocking(collect_monitors_blocking).await {
+        Ok(Ok(metas)) => metas,
+        Ok(Err(e)) => return ToolOutcome::err(e),
+        Err(e) => return ToolOutcome::err(format!("枚举显示器任务异常：{e}")),
+    };
+    let Some((origin_x, origin_y, width, height)) = virtual_screen_rect(&metas) else {
+        return ToolOutcome::err("没有检测到显示器（可能是无头环境）。".to_string());
+    };
+    if !dry_run {
+        let payload = MarkPayload {
+            origin_x,
+            origin_y,
+            width,
+            height,
+            points: points.clone(),
+        };
+        if let Err(e) = mark_overlay::show(payload, duration_ms) {
+            return ToolOutcome::err(e);
+        }
+    }
+    let mut out = format!(
+        "[ok] 已标注 {} 个屏幕坐标{}\n\
+         屏幕：{}x{}（虚拟桌面物理像素，原点 ({}, {})）\n\
+         时长：{}ms{}\n\
+         dry_run：{}\n",
+        points.len(),
+        if dry_run { "（dry_run，未绘制）" } else { "" },
+        width,
+        height,
+        origin_x,
+        origin_y,
+        duration_ms,
+        if dry_run {
+            ""
+        } else {
+            "（到时自动关闭；叠加层是透明置顶、鼠标穿透的，不挡操作）"
+        },
+        dry_run
+    );
+    for (index, point) in points.iter().enumerate() {
+        out.push_str(&format!(
+            "{}. ({}, {}){}\n",
+            index + 1,
+            point.x,
+            point.y,
+            if point.label.is_empty() {
+                String::new()
+            } else {
+                format!("  标签：{}", point.label)
+            }
+        ));
+    }
+    if !dry_run {
+        out.push_str("\n提示：叠加层用十字+圆环标出每个点；配合 screenshot/grid 可精确点选。");
+    }
+    ToolOutcome::ok(out).with_display(format!(
+        "标注 {} 个点{}",
+        points.len(),
+        if dry_run { "（dry_run）" } else { "" }
+    ))
+}
+
+// ============================================================
 // 工具声明
 // ============================================================
 
@@ -1197,6 +1643,40 @@ tool_impl!(
         }
     }),
     screenshot
+);
+
+tool_impl!(
+    ScreenMark,
+    "screen_mark",
+    "把指定屏幕坐标在真实屏幕上可视化标出（辅助精准点选）。\n\
+     参数 points：1-32 个 {x, y, label?}（物理像素）；duration_ms 默认 3000（500-10000）；\n\
+     dry_run=true 只返回坐标、不绘制（测试/预检用）。\n\
+     Windows 下会创建一个透明、置顶、鼠标穿透的分层窗口，用十字+圆环+编号标出每个点，\
+     到时间自动关闭，工具立即返回不阻塞；非 Windows 仅支持 dry_run。",
+    json!({
+        "type": "object",
+        "properties": {
+            "points": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "description": "要标注的点，例如 [{\"x\":100,\"y\":200,\"label\":\"按钮\"}]",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer", "description": "物理像素横坐标"},
+                        "y": {"type": "integer", "description": "物理像素纵坐标"},
+                        "label": {"type": "string", "description": "可选短标签（<=12 字符）"}
+                    },
+                    "required": ["x", "y"]
+                }
+            },
+            "duration_ms": {"type": "integer", "description": "标注显示时长毫秒，默认 3000，范围 500-10000"},
+            "dry_run": {"type": "boolean", "description": "只返回坐标、不绘制叠加层（默认 false）"}
+        },
+        "required": ["points"]
+    }),
+    screen_mark
 );
 
 // ============================================================
@@ -1506,5 +1986,71 @@ mod tests {
         let app_bytes = std::fs::read(&app_path).unwrap();
         assert_eq!(&app_bytes[..8], b"\x89PNG\r\n\x1a\n", "capture_primary 应是合法 PNG");
         println!("capture_primary: {} ({} 字节)", app_path.display(), app_bytes.len());
+    }
+
+    #[test]
+    fn mark_points_parsing() {
+        let points = parse_mark_points(Some(&json!([
+            {"x": 10, "y": 20},
+            {"x": "300", "y": 400, "label": "  按钮  "},
+            {"x": -5, "y": 0, "label": "abcdefghijklmnop"}
+        ])))
+        .unwrap();
+        assert_eq!(points.len(), 3);
+        assert_eq!(points[0], MarkPoint { x: 10, y: 20, label: String::new() });
+        assert_eq!(points[1].x, 300);
+        assert_eq!(points[1].label, "按钮");
+        assert_eq!(points[2].x, -5);
+        // truncate_chars 超长时保留 12 个字符并追加省略号（共 13 字符）
+        assert!(
+            points[2].label.chars().count() <= 13,
+            "label 应截断到 12 字符+省略号"
+        );
+        assert!(points[2].label.starts_with("abcdefghijkl"), "{}", points[2].label);
+        // 上限 32
+        let many: Vec<Value> = (0..32).map(|i| json!({"x": i, "y": i})).collect();
+        assert!(parse_mark_points(Some(&json!(many))).is_ok());
+        let many: Vec<Value> = (0..33).map(|i| json!({"x": i, "y": i})).collect();
+        assert!(parse_mark_points(Some(&json!(many))).is_err());
+        // 错误路径
+        assert!(parse_mark_points(None).is_err());
+        assert!(parse_mark_points(Some(&json!([]))).is_err());
+        assert!(parse_mark_points(Some(&json!([{"y": 1}]))).is_err());
+        assert!(parse_mark_points(Some(&json!([{"x": 1}]))).is_err());
+        assert!(parse_mark_points(Some(&json!(["oops"]))).is_err());
+        assert!(parse_mark_points(Some(&json!({"x": 1, "y": 2}))).is_err());
+    }
+
+    #[tokio::test]
+    async fn screen_mark_dry_run_does_not_draw() {
+        let root = crate::test_support::temp_root("screen-mark");
+        let (ctx, _host) = crate::test_support::fake_ctx(&root);
+        // 只走 dry_run：绝不创建叠加层/不碰屏幕
+        let out = screen_mark(
+            &ctx,
+            json!({
+                "points": [{"x": 100, "y": 200}, {"x": 300, "y": 400, "label": "按钮"}],
+                "duration_ms": 1500,
+                "dry_run": true
+            }),
+        )
+        .await;
+        assert!(out.ok, "{}", out.content);
+        println!("screen_mark dry_run:\n{}", out.content);
+        assert!(out.content.contains("dry_run：true"), "{}", out.content);
+        assert!(out.content.contains("1. (100, 200)"), "{}", out.content);
+        assert!(out.content.contains("2. (300, 400)"), "{}", out.content);
+        assert!(out.content.contains("标签：按钮"), "{}", out.content);
+        assert!(out.content.contains("时长：1500ms"), "{}", out.content);
+        assert!(out.content.contains("屏幕："), "{}", out.content);
+        // 参数校验
+        let bad = screen_mark(&ctx, json!({"points": [], "dry_run": true})).await;
+        assert!(!bad.ok);
+        let bad = screen_mark(&ctx, json!({"points": [{"x": 1, "y": 2}], "duration_ms": 1, "dry_run": true})).await;
+        assert!(bad.ok, "{}", bad.content);
+        assert!(bad.content.contains("时长：500ms"), "duration 应 clamp 到 500ms: {}", bad.content);
+        let bad = screen_mark(&ctx, json!({"points": [{"x": 1, "y": 2}], "duration_ms": 999999, "dry_run": true})).await;
+        assert!(bad.ok, "{}", bad.content);
+        assert!(bad.content.contains("时长：10000ms"), "duration 应 clamp 到 10000ms: {}", bad.content);
     }
 }

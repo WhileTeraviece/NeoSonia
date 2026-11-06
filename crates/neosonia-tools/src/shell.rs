@@ -634,6 +634,14 @@ fn make_command(shell: &ShellCmd, cwd: &PathBuf, envs: &BTreeMap<String, String>
 }
 
 fn start_job(ctx: &ToolCtx, spec: StartSpec) -> Result<(String, u32), ToolOutcome> {
+    // 备份区只读：命令字符串里引用备份区目录，或 working_dir 指向备份区，一律拒绝执行。
+    let paths = ctx.paths();
+    if crate::snapshot::backups_dir_mentioned(&spec.command, &paths.root) {
+        return Err(crate::snapshot::command_backups_denied(
+            &paths,
+            "命令里引用了备份区目录",
+        ));
+    }
     let settings = ctx.settings();
     let workspace = ctx.workspace();
     if let Err(e) = std::fs::create_dir_all(&workspace) {
@@ -650,6 +658,12 @@ fn start_job(ctx: &ToolCtx, spec: StartSpec) -> Result<(String, u32), ToolOutcom
         },
         _ => workspace,
     };
+    if crate::snapshot::path_in_backups(&paths, &cwd) {
+        return Err(crate::snapshot::command_backups_denied(
+            &paths,
+            &format!("working_dir 指向备份区目录 {}", cwd.display()),
+        ));
+    }
     if !cwd.is_dir() {
         return Err(ToolOutcome::err(format!(
             "working_dir 不是存在的目录：{}",

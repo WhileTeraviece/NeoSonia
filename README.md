@@ -535,7 +535,7 @@ pwsh scripts\build-release.ps1
 - Release profile：`opt-level = 3`、`lto = "thin"`、`strip = "symbols"`（见根 `Cargo.toml`）。
 - 产物：`dist\NeoSonia-<版本>-win64\`（exe + assets + README + docs）与 `dist\NeoSonia-<版本>-win64.zip`。
 - **发布包不包含** `config\`、`logs\`、`data\`、`sandbox\`：避免 API key / 邮箱 token 泄露。
-- 版本号来自根 `Cargo.toml` 的 `[package] version`（当前 0.9.3）。
+- 版本号来自根 `Cargo.toml` 的 `[package] version`（当前 1.0.0）。
 - 已知限制：管理员模式下向窗口拖放文件受 Windows UIPI 限制（已用 `ChangeWindowMessageFilterEx` 放行，个别安全软件仍可能拦截，可用「附件」按钮或「复制文件 → Ctrl+V」）。
 
 ## 测试
@@ -554,7 +554,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 ```
 
-产物：`dist\NeoSoniaSetup-0.9.3-win64.exe`。静默安装 `/S [/D=<目录>]`，默认装到
+产物：`dist\NeoSoniaSetup-1.0.0-win64.exe`。静默安装 `/S [/D=<目录>]`，默认装到
 `%LOCALAPPDATA%\Programs\NeoSonia`；配置/聊天记录/workspace/personas/skills/logs 均在安装目录下；
 卸载用安装目录里的 `Uninstall.exe`（「应用和功能」里也可卸载）。
 

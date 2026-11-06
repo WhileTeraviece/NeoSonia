@@ -1,4 +1,4 @@
-# 构建产物
+﻿# 构建产物
 /target
 /dist
 /build
@@ -46,3 +46,4 @@ desktop.ini
 # 允许的图标（源码资源）
 !/assets/*.png
 !/crates/*/res/*.ico
+/backups

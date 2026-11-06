@@ -1114,6 +1114,10 @@ async fn move_path(ctx: &ToolCtx, args: Value) -> ToolOutcome {
         Ok(p) => p,
         Err(e) => return e,
     };
+    // 从备份区往外移动 = 删除备份副本，属于修改备份区，必须拒绝。
+    if let Err(e) = crate::snapshot::guard_backups_write(&ctx.paths(), &from) {
+        return e;
+    }
     let to = match resolve_write_path(ctx, &to_raw, allow_outside) {
         Ok(p) => p,
         Err(e) => return e,

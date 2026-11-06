@@ -718,3 +718,23 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
   - `logs/ui/persona-raw-caret.png`：在正文不同行点击两次并回车，换行分别插入在点击位置（"一个常|" 与 "不寒暄、|"），不再是固定同一行；
   - 正文区不再有内层边框，文字直接在编辑卡内；内层滚动、滚到最底末行完整可见保持。
 - 兼容：`focus_ring(bool)` 是 vendor/fenestra-core 新增的 Element builder（默认 true），可关掉键盘焦点光环。
+
+## v1.0.0 开发记录（未发布前记录）
+
+### 即时存档与恢复（备份区）
+- `Paths.backups = <安装根>/backups`；`snapshot_save` / `snapshot_list` / `snapshot_restore` / `snapshot_delete` 四个工具。
+- 每个原始路径一个稳定快照 id（路径 sha256 前 12 位 + 文件名）；再次保存 = 同 id、version+1、payload 覆盖；单文件上限 32 MiB。
+- 恢复前校验 payload SHA-256；manifest 记录 original_path/version/saved_at/sha256/size/note。
+- 备份区对模型只读：写/删/移动类文件工具的目标在 `backups/` 内被拒；命令字符串或 working_dir 命中备份区被拒；读取允许。
+- 真机 E2E：写 `sandbox/workspace/v100-demo.txt`(hello-v1) → snapshot_save → 改成 changed → snapshot_restore → read_file 确认为 hello-v1；`sandbox/backups/7142b302f422_v100-demo.txt/{manifest.json,payload}` 存在，manifest version=1、sha256 正确。
+
+### 计算机使用新工具
+- `screen_mark`：Windows 分层透明置顶窗口（鼠标穿透、不抢焦点）+ GDI 十字/圆环/编号，`duration_ms` 后自动关闭；`dry_run` 只算坐标。
+  - 修复：工具原先要等消息循环结束才返回导致建窗错误被吞、UI 显示"完成"但屏幕无标记；改为窗口显示成功后立即握手返回（实测 105ms 完成、屏幕出现编号标记）。
+- `mouse_graph`：表达式解析（+ - * / ^、括号、一元负号、pi/e、sin/cos/.../min/max），定义域 [x_min,x_max]、samples、origin/scale、duration、button、dry_run；NaN/inf 点跳过；取消/结束时释放按键。
+  - 真机 dry_run：sin(x) 在 [-3.14,3.14] 采样 120 点，无 NaN/inf。
+
+### 界面
+- 历史页：说明文字左端对齐；返回箭头移到右上角；新建对话 `+` 移到「会话 (N)」行最右（截图 `logs/ui/ui-history-v091.png`）。
+- 设备页：移除「返回设置」按钮；刷新改为右上角图标按钮（截图 `logs/ui/ui-remote-v091.png`）。
+- 版本号推进到 1.0.0（暂不发布，等验收）。

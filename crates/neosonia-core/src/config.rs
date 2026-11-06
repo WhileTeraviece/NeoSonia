@@ -40,6 +40,11 @@ pub struct Paths {
     pub devices_file: PathBuf,
     /// 对话历史库（与 memory 共用 SQLite 文件也可以，这里单独一个便于迁移）。
     pub conversations_db: PathBuf,
+    /// 即时存档备份区（`backups/`）。
+    ///
+    /// 只能由 `snapshot_save`（新版本覆盖）/ `snapshot_restore`（放回原位置）/
+    /// `snapshot_delete`（删除备份）修改；普通文件工具与命令工具对这里只读。
+    pub backups: PathBuf,
 }
 
 impl Paths {
@@ -98,6 +103,7 @@ impl Paths {
             qrcodes: data_dir.join("qrcodes"),
             workspace: root.join("workspace"),
             personas: root.join("personas"),
+            backups: root.join("backups"),
             config_dir,
             data_dir,
             logs,
@@ -136,6 +142,7 @@ impl Paths {
             &self.skills,
             &self.uploads,
             &self.qrcodes,
+            &self.backups,
         ] {
             std::fs::create_dir_all(d)?;
         }

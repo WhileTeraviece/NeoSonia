@@ -1,4 +1,4 @@
-﻿//! 历史面板：会话列表 + 消息命中 + 新建/删除。
+//! 历史面板：会话列表 + 消息命中 + 新建/删除。
 //!
 //! 数据来自 `AppState::history`（Lead 的 `HistoryState`）；所有动作通过
 //! `Msg::History*` 交给主循环，`view` 里不做 IO。
@@ -80,27 +80,14 @@ fn header(st: &AppState, c: &UiColors) -> Element<Msg> {
     } else {
         Msg::HistoryToggle
     };
+    // 标题与说明都从内容左边缘开始（不返回箭头缩进），返回图标放右上角。
     row()
         .w_full()
         .items_start()
-        .justify_between()
         .gap(space::MD)
         .children((
-            // 返回按钮放标题左侧（与邮件页一致），右侧只留「新建对话」。
-            row()
-                .grow()
-                .min_w(0.0)
-                .items_start()
-                .gap(space::SM)
-                .children((
-                    icon_button(icons::lucide::arrow_left())
-                        .size(ControlSize::Sm)
-                        .variant(ButtonVariant::Ghost)
-                        .label("返回对话")
-                        .on_click(back_msg)
-                        .id("history-back"),
-                    col().grow().min_w(0.0).gap(space::XS).children((
-                        row().items_center().gap(space::SM).children((
+            col().grow().min_w(0.0).gap(space::XS).children((
+                row().items_center().gap(space::SM).children((
                     text("历史")
                         .size(TextSize::Lg)
                         .weight(Weight::Semibold)
@@ -114,11 +101,35 @@ fn header(st: &AppState, c: &UiColors) -> Element<Msg> {
                         col().w(0.0)
                     },
                 )),
-                        text("搜索过去的会话与消息；打开会话会载入到对话页继续聊。")
-                            .size(TextSize::Xs)
-                            .color(c.text_muted),
-                    )),
-                )),
+                text("搜索过去的会话与消息；打开会话会载入到对话页继续聊。")
+                    .size(TextSize::Xs)
+                    .color(c.text_muted)
+                    .leading(1.5),
+            )),
+            icon_button(icons::lucide::arrow_left())
+                .size(ControlSize::Sm)
+                .variant(ButtonVariant::Ghost)
+                .label("返回对话")
+                .on_click(back_msg)
+                .id("history-back"),
+        ))
+}
+
+/// 「会话 N」标题行：左侧标题+数量，右侧「新建对话」图标按钮。
+fn sessions_title_row(c: &UiColors, count: usize) -> Element<Msg> {
+    row()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap(space::SM)
+        .children((
+            row().items_center().gap(space::SM).children((
+                text("会话")
+                    .size(TextSize::Sm)
+                    .weight(Weight::Semibold)
+                    .color(c.text),
+                chip(format!("{count}"), c.text_subtle, c.selection),
+            )),
             icon_button(icons::lucide::plus())
                 .size(ControlSize::Sm)
                 .variant(ButtonVariant::Secondary)
@@ -317,10 +328,14 @@ fn empty_hint(c: &UiColors, title: &str, desc: &str, icon: Element<Msg>) -> Elem
 
 pub fn view(st: &AppState, c: &UiColors) -> Element<Msg> {
     let h = &st.history;
-    let mut children: Vec<Element<Msg>> = vec![header(st, c), search_row(st, c)];
+    // 顺序：标题+说明/右上返回 → 「会话 N」+右侧新建 → 搜索 → 会话列表 → 消息命中。
+    let mut children: Vec<Element<Msg>> = vec![
+        header(st, c),
+        sessions_title_row(c, h.sessions.len()),
+        search_row(st, c),
+    ];
 
     // 会话列表
-    children.push(section_title(c, "会话", h.sessions.len()));
     if h.sessions.is_empty() {
         let (title, desc) = if h.loading {
             ("正在搜索…", "历史库较大时第一次搜索会慢一点。")
@@ -402,5 +417,61 @@ mod tests {
         // 更早的显示日期（本地时区，只断言非空且含 '-'）。
         let old = age_label(now, now - 30 * 86_400_000);
         assert!(old.contains('-'), "{old}");
+    }
+
+    /// headless 预览：验证新布局（说明左对齐、返回在右上、+ 在会话行右侧）。
+    #[test]
+    fn history_layout_preview_png() {
+        use neosonia_core::config::{Paths, Settings};
+        let mut st = AppState::new(
+            Paths::from_root("C:/tmp/neosonia-history-preview"),
+            Settings::default(),
+        );
+        st.page = NavPage::History;
+        let now = neosonia_core::util::now_ms();
+        st.history.sessions = vec![
+            ConversationSummary {
+                id: "s1".into(),
+                title: "排查邮件 OAuth 授权失败".into(),
+                created_at_ms: now - 3_600_000,
+                updated_at_ms: now - 61_000,
+                message_count: 12,
+                preview: "先检查 audience 和 IMAP scope…".into(),
+                persona: "default".into(),
+            },
+            ConversationSummary {
+                id: "s2".into(),
+                title: "重构设置页滚动容器".into(),
+                created_at_ms: now - 86_400_000,
+                updated_at_ms: now - 7_200_000,
+                message_count: 8,
+                preview: "min_h(0) 是 flex 滚动的关键…".into(),
+                persona: String::new(),
+            },
+        ];
+        st.history.hits = vec![ConversationHit {
+            conversation_id: "s1".into(),
+            conversation_title: "排查邮件 OAuth 授权失败".into(),
+            role: "assistant".into(),
+            snippet: "需要在 OAuth 诊断里展示 audience / scopes / has_imap_scope。".into(),
+            at_ms: now - 120_000,
+        }];
+
+        let theme = crate::theme::nova_theme(neosonia_core::config::ThemeMode::Dark, true, 1.0);
+        let c = crate::theme::colors(&theme);
+        let mut fonts = Fonts::with_system();
+        let img = fenestra::shell::render_element_with(
+            view(&st, &c),
+            &theme,
+            (424, 760),
+            &mut fonts,
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../logs/ui/ui-history-v091.png");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        img.save(&path).expect("save history preview png");
+        eprintln!("history preview: {}", path.display());
     }
 }
