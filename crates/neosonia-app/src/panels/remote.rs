@@ -379,11 +379,14 @@ fn ua_model(user_agent: &str) -> String {
     clip(ua, 36)
 }
 
-/// 设备自定义名：1-40 字符、不能含换行/制表符。
+/// 设备名长度上限：必须与 web 端 `DeviceStore::MAX_NAME_CHARS = 32` 保持一致。
+const DEVICE_NAME_MAX_CHARS: usize = 32;
+
+/// 设备自定义名：1-32 字符、不能含换行/制表符。
 fn valid_device_name(name: &str) -> bool {
     let name = name.trim();
     !name.is_empty()
-        && name.chars().count() <= 40
+        && name.chars().count() <= DEVICE_NAME_MAX_CHARS
         && !name.chars().any(|ch| ch == '\n' || ch == '\r' || ch == '\t')
 }
 
@@ -457,13 +460,21 @@ fn device_row(
                         .on_click(Msg::DeviceRenameCancel)
                         .id(&format!("remote-rename-cancel-{index}")),
                     text(if valid {
-                        "1-40 个字符，常见中文/英文/emoji 均可。"
+                        "1-32 个字符，常见中文/英文/emoji 均可。"
                     } else {
-                        "名称需 1-40 字符，且不能含换行/制表符。"
+                        "名称需 1-32 字符，且不能含换行/制表符。"
                     })
                     .size(TextSize::Xs)
                     .color(if valid { c.text_subtle } else { c.danger })
                     .truncate(),
+                    text(format!(
+                        "{}/{DEVICE_NAME_MAX_CHARS}",
+                        st.device_rename_input.trim().chars().count()
+                    ))
+                    .size(TextSize::Xs)
+                    .tabular()
+                    .color(if valid { c.text_subtle } else { c.danger })
+                    .shrink0(),
                 ))
                 .into(),
         );
@@ -628,13 +639,17 @@ mod tests {
         let long_ua = format!("Mozilla/5.0 ({})", "x".repeat(120));
         assert!(ua_model(&long_ua).chars().count() <= 32);
 
-        // 设备名：1-40 字符，允许中英文/emoji，拒绝空/超长/换行。
+        // 设备名：1-32 字符（与 web DeviceStore::MAX_NAME_CHARS 一致），
+        // 允许中英文/emoji，拒绝空/超长/换行。
         assert!(valid_device_name("客厅 iPad"));
         assert!(valid_device_name("iPhone 15 Pro"));
         assert!(valid_device_name("📱 手机"));
+        // 边界：32 字符合法，33 字符不合法（旧上限 40 会让 store 拒绝）。
+        assert!(valid_device_name(&"x".repeat(DEVICE_NAME_MAX_CHARS)));
+        assert!(!valid_device_name(&"x".repeat(DEVICE_NAME_MAX_CHARS + 1)));
+        assert!(!valid_device_name(&"x".repeat(41)));
         assert!(!valid_device_name(""));
         assert!(!valid_device_name("   "));
-        assert!(!valid_device_name(&"x".repeat(41)));
         assert!(!valid_device_name("a\nb"));
         assert!(!valid_device_name("a\tb"));
     }
