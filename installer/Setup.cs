@@ -65,6 +65,7 @@ internal static class Setup
 
             Directory.CreateDirectory(dir);
             ExtractPayload(dir);
+        RemoveLegacyUninstaller(dir);
             Version = ReadVersionFromPayload(dir) ?? Version;
 
             // 数据目录骨架（应用启动时也会 ensure，这里先建好让用户直观看到）
@@ -242,6 +243,12 @@ internal static class Setup
         }
     }
 
+    /// 删除旧版本残留的 Uninstall.exe；新版本卸载走 neosonia.exe --uninstall。
+    private static void RemoveLegacyUninstaller(string dir)
+    {
+        try { File.Delete(Path.Combine(dir, "Uninstall.exe")); } catch { }
+    }
+
     private static void CreateShortcuts(string dir)
     {
         var exe = Path.Combine(dir, "neosonia.exe");
@@ -249,8 +256,10 @@ internal static class Setup
         var menuDir = Path.Combine(programs, Product);
         Directory.CreateDirectory(menuDir);
         CreateLnk(Path.Combine(menuDir, Product + ".lnk"), exe, "--home \"" + dir + "\"", dir, dir + "\\neosonia.exe");
+        // 卸载不再依赖独立 Uninstall.exe（安全软件会拦截/隔离自删除卸载器）：
+        // 指向主程序的 --uninstall 模式，删除目录由主程序交给分离的 cmd 完成。
         CreateLnk(Path.Combine(menuDir, "卸载 " + Product + ".lnk"),
-                  Path.Combine(dir, "Uninstall.exe"), "", dir, Path.Combine(dir, "Uninstall.exe"));
+                  Path.Combine(dir, "neosonia.exe"), "--uninstall", dir, exe);
 
         // 桌面快捷方式（失败不致命）
         try
@@ -296,8 +305,8 @@ internal static class Setup
             key.SetValue("Publisher", Publisher);
             key.SetValue("InstallLocation", dir);
             key.SetValue("DisplayIcon", Path.Combine(dir, "neosonia.exe") + ",0");
-            key.SetValue("UninstallString", "\"" + Path.Combine(dir, "Uninstall.exe") + "\"");
-            key.SetValue("QuietUninstallString", "\"" + Path.Combine(dir, "Uninstall.exe") + "\" /S");
+            key.SetValue("UninstallString", "\"" + Path.Combine(dir, "neosonia.exe") + "\" --uninstall");
+            key.SetValue("QuietUninstallString", "\"" + Path.Combine(dir, "neosonia.exe") + "\" --uninstall --silent");
             key.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
             key.SetValue("EstimatedSize", sizeKb, RegistryValueKind.DWord);
             key.SetValue("NoModify", 1, RegistryValueKind.DWord);

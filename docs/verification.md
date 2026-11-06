@@ -738,3 +738,7 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
 - 历史页：说明文字左端对齐；返回箭头移到右上角；新建对话 `+` 移到「会话 (N)」行最右（截图 `logs/ui/ui-history-v091.png`）。
 - 设备页：移除「返回设置」按钮；刷新改为右上角图标按钮（截图 `logs/ui/ui-remote-v091.png`）。
 - 版本号推进到 1.0.0（暂不发布，等验收）。
+### v1.0.0 卸载方式调整（安全软件兼容）
+- 现象：1.0.0 安装到测试目录后，`Uninstall.exe` 被 Kaspersky 实时防护锁定（复制/读取/启动均 sharing violation），约一分钟后文件被隔离删除；Setup 解压该文件时也被拦，导致卸载缺失。
+- 修复：卸载改由 `neosonia.exe --uninstall [--silent]` 执行（删注册表/快捷方式 + 分离 cmd 延迟 rmdir），安装包不再包含 `Uninstall.exe`；Setup 升级安装时会清理旧版残留的 `Uninstall.exe`。
+- 待复测：安装 → `neosonia.exe --uninstall --silent` → 目录/注册表/快捷方式全部清理。

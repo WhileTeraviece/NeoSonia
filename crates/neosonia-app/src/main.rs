@@ -84,11 +84,15 @@ fn main() {
     let mut ask: Option<String> = None;
     let mut http_probe: Option<String> = None;
     let mut autostart_mode = false;
+    let mut uninstall_mode = false;
+    let mut uninstall_silent = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--home" => home_override = args.next(),
             "--autostart" => autostart_mode = true,
+            "--uninstall" => uninstall_mode = true,
+            "--silent" => uninstall_silent = true,
             "--help" | "-h" => {
                 println!("NeoSonia — 常驻桌面的 AI agent");
                 println!("用法: neosonia [--home <目录>] [--probe] [--autostart]");
@@ -96,6 +100,8 @@ fn main() {
                 println!("  --probe         只开一个最小测试窗口（排查 GPU/窗口问题）");
                 println!("  --ask <指令>    无界面跑一轮 agent（联调/脚本用），把过程打到 stdout");
                 println!("  --autostart     开机自启用：只跑后端，不打开窗口（热键/托盘可唤出）");
+                println!("  --uninstall     卸载：删安装目录（含配置/数据）、注册表项与快捷方式");
+                println!("  --silent        与 --uninstall 配合：不弹确认框");
                 println!("快捷键: 默认 Alt+Space 显示/隐藏窗口，可在设置页修改");
                 return;
             }
@@ -106,6 +112,11 @@ fn main() {
                 eprintln!("未知参数: {other}（用 --help 查看用法）");
             }
         }
+    }
+
+    // 卸载入口：必须早于任何目录/日志/窗口初始化（安装目录随后由 cmd 延迟删除）。
+    if uninstall_mode {
+        std::process::exit(run_uninstall(uninstall_silent));
     }
 
     let paths = match home_override {
@@ -490,4 +501,93 @@ fn window_icon() -> Option<(u32, u32, Vec<u8>)> {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     Some((w, h, rgba.into_raw()))
+}
+/// 卸载：不依赖独立的 Uninstall.exe（第三方安全软件会拦截/隔离自删除的卸载器），
+/// 由安装目录里的 neosonia.exe --uninstall 完成：
+/// 删注册表项/快捷方式，然后交给分离的 cmd 在进程退出后删安装目录。
+#[cfg(windows)]
+fn run_uninstall(silent: bool) -> i32 {
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW,
+    };
+
+    let dir = match std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+        Some(dir) => dir,
+        None => return 1,
+    };
+    if !silent {
+        let text = format!(
+            "确定卸载 NeoSonia？\n\n将删除安装目录（含配置/数据/workspace/skills）以及快捷方式和「应用和功能」条目：\n{}",
+            dir.display()
+        );
+        // SAFETY: 纯 Win32 消息框调用，字符串在调用期间有效。
+        let result = unsafe {
+            MessageBoxW(
+                None,
+                &windows::core::HSTRING::from(text),
+                &windows::core::HSTRING::from("卸载 NeoSonia"),
+                MB_YESNO | MB_ICONQUESTION,
+            )
+        };
+        if result != IDYES {
+            return 1;
+        }
+    }
+
+    // 1) 注册表项（「应用和功能」）
+    let _ = std::process::Command::new("reg.exe")
+        .args([
+            "delete",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\NeoSonia",
+            "/f",
+        ])
+        .creation_flags(0x0800_0000)
+        .status();
+
+    // 2) 快捷方式（开始菜单目录 + 桌面）
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let menu = std::path::Path::new(&appdata)
+            .join(r"Microsoft\Windows\Start Menu\Programs\NeoSonia");
+        let _ = std::fs::remove_dir_all(menu);
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let desktop = std::path::Path::new(&profile).join(r"Desktop\NeoSonia.lnk");
+        let _ = std::fs::remove_file(desktop);
+    }
+
+    // 3) 进程退出后删目录：写一个批处理（比把 & 命令塞进 /c 参数可靠），
+    //    先 cd 到系统盘避免"目录是当前工作目录"导致 rmdir 失败，延迟后结束其它
+    //    实例（它们会锁住 exe/配置），再递归删除；结果写到 %TEMP% 便于排查。
+    let log = std::env::temp_dir().join("neosonia-uninstall.log");
+    let batch = std::env::temp_dir().join("neosonia-uninstall.cmd");
+    let body = format!(
+        "@echo off\r\ncd /d \"%SystemRoot%\"\r\nping 127.0.0.1 -n 4 >nul\r\ntaskkill /IM neosonia.exe /F >nul 2>&1\r\nrmdir /s /q \"{dir}\"\r\nif exist \"{dir}\" (echo FAILED %date% %time% >> \"{log}\") else (echo OK %date% %time% >> \"{log}\")\r\ndel \"%~f0\"\r\n",
+        dir = dir.display(),
+        log = log.display()
+    );
+    let _ = std::fs::write(&batch, body);
+    let _ = std::process::Command::new("cmd.exe")
+        .args(["/c", &batch.to_string_lossy().to_string()])
+        .creation_flags(0x0800_0000 | 0x0000_0008) // CREATE_NO_WINDOW | DETACHED_PROCESS
+        .spawn();
+    0
+}
+
+#[cfg(not(windows))]
+fn run_uninstall(silent: bool) -> i32 {
+    let _ = silent;
+    let Ok(exe) = std::env::current_exe() else {
+        return 1;
+    };
+    let Some(dir) = exe.parent() else {
+        return 1;
+    };
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("卸载失败: {e}");
+            1
+        }
+    }
 }
