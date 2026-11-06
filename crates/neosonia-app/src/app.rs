@@ -1316,48 +1316,28 @@ impl NeoSoniaApp {
             }
             Msg::DeviceRename { id, name } => {
                 let name = name.trim().to_string();
-                if name.is_empty() || name.chars().count() > 40 {
-                    self.st.push_notice("设备名需 1-40 个字符", NoticeLevel::Warning);
+                if name.is_empty() || name.chars().count() > 32 {
+                    self.st.push_notice("设备名需 1-32 个字符", NoticeLevel::Warning);
                     return;
                 }
-                if let Ok(raw) = std::fs::read_to_string(&self.st.paths.devices_file) {
-                    if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&raw) {
-                        let mut changed = false;
-                        if let Some(arr) = json.get_mut("devices").and_then(|v| v.as_array_mut()) {
-                            for d in arr.iter_mut() {
-                                if d.get("id").and_then(|v| v.as_str()) == Some(id.as_str()) {
-                                    d["name"] = serde_json::Value::String(name.clone());
-                                    changed = true;
-                                }
-                            }
-                        } else if let Some(arr) = json.as_array_mut() {
-                            for d in arr.iter_mut() {
-                                if d.get("id").and_then(|v| v.as_str()) == Some(id.as_str()) {
-                                    d["name"] = serde_json::Value::String(name.clone());
-                                    changed = true;
-                                }
-                            }
-                        }
-                        if changed {
-                            if let Ok(text) = serde_json::to_string_pretty(&json) {
-                                let _ = neosonia_core::util::atomic_write(
-                                    &self.st.paths.devices_file,
-                                    text.as_bytes(),
-                                );
-                                self.st.push_notice(
-                                    format!("设备已重命名为：{name}"),
-                                    NoticeLevel::Success,
-                                );
-                            }
-                        }
-                    }
+                let ok = self
+                    .bridge
+                    .as_ref()
+                    .and_then(|b| b.rename_device(&id, &name))
+                    .is_some();
+                if ok {
+                    self.st.push_notice(
+                        format!("设备已重命名为：{name}"),
+                        NoticeLevel::Success,
+                    );
+                    self.sync_remote_state();
+                } else {
+                    self.st.push_notice("重命名失败：设备不存在或配置文件不可写", NoticeLevel::Error);
                 }
                 self.st.device_rename_id.clear();
                 self.st.device_rename_input.clear();
-                self.sync_remote_state();
                 self.st.dirty = true;
-            }
-            Msg::MailLogout => {
+            }            Msg::MailLogout => {
                 if let Some(b) = &self.bridge {
                     let note = b.mail_logout();
                     self.st.push_notice(note, NoticeLevel::Info);

@@ -1,4 +1,4 @@
-//! 已信任设备表（`data/devices.json`）。
+﻿//! 已信任设备表（`data/devices.json`）。
 //!
 //! 结构（契约 5.1）：
 //! ```json
@@ -429,3 +429,32 @@ mod tests {
         assert!(store.rename("", "x").is_none());
     }
 }
+/// 供桌面端（app）使用的文件级重命名：不依赖 WebServer 是否在运行。
+/// 直接加载 `devices.json` → 改名 → 原子写回。
+pub fn rename_device_in_file(
+    paths: &neosonia_core::config::Paths,
+    device_id: &str,
+    name: &str,
+) -> Option<neosonia_core::TrustedDevice> {
+    let store = DeviceStore::load(&paths.devices_file);
+    store.rename(device_id, name)
+}
+    #[test]
+    fn rename_device_in_file_renames_and_persists() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let paths = neosonia_core::config::Paths::from_root(dir.path());
+        let store = DeviceStore::load(&paths.devices_file);
+        let (_token, device) = store.pair("旧名字", "Windows NT 10.0", "10.0.0.9", 8).unwrap();
+
+        let renamed = rename_device_in_file(&paths, &device.id, "新名字").expect("应改名成功");
+        assert_eq!(renamed.name, "新名字");
+
+        // 落盘后重新加载仍是新名字（桌面端重命名走这条路径）。
+        let reloaded = DeviceStore::load(&paths.devices_file);
+        let list = reloaded.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "新名字");
+
+        // 不存在的设备 id 返回 None，且不改文件。
+        assert!(rename_device_in_file(&paths, "no-such-id", "X").is_none());
+    }

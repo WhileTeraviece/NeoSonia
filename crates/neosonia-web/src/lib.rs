@@ -27,6 +27,7 @@ mod api;
 mod assets;
 mod auth;
 mod devices;
+pub use devices::rename_device_in_file;
 mod events;
 mod net;
 mod pairing;

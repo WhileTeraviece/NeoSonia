@@ -839,6 +839,15 @@ impl Bridge {
         self.web.lock().as_ref().map(|s| s.refresh_pairing())
     }
 
+    /// 重命名已信任设备：优先走运行中的 WebServer（与远程改名同一份内存 store，
+    /// 避免"写文件后被内存状态覆盖"），Web 未启用时直接改 devices.json。
+    pub fn rename_device(&self, id: &str, name: &str) -> Option<neosonia_core::TrustedDevice> {
+        if let Some(server) = self.web.lock().as_ref() {
+            return server.rename_device(id, name);
+        }
+        neosonia_web::rename_device_in_file(&self.paths, id, name)
+    }
+
     pub fn web_devices(&self) -> Vec<neosonia_core::TrustedDevice> {
         self.web.lock().as_ref().map(|s| s.devices()).unwrap_or_default()
     }

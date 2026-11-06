@@ -1,4 +1,4 @@
-//! `WebServer`：启动/停止 axum 服务，路由装配，安全响应头。
+﻿//! `WebServer`：启动/停止 axum 服务，路由装配，安全响应头。
 //!
 //! 由 `neosonia-app` 在 tokio runtime 内调用 [`WebServer::start`]；监听地址来自
 //! `settings.remote.{bind,port}`（运行期热改后需要重启服务才生效）。
@@ -228,6 +228,11 @@ impl WebServer {
     /// 已信任设备列表。
     pub fn devices(&self) -> Vec<neosonia_core::TrustedDevice> {
         self.inner.devices.list()
+    }
+
+    /// 重命名一台已信任设备（与远程 `POST /api/devices/{id}/name` 走同一个 store）。
+    pub fn rename_device(&self, device_id: &str, name: &str) -> Option<neosonia_core::TrustedDevice> {
+        self.inner.devices.rename(device_id, name)
     }
 
     /// 撤销一台设备；返回是否真的删除了。
