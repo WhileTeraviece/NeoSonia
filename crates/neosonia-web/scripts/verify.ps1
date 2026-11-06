@@ -57,8 +57,12 @@ function Start-Probe([int]$probePort) {
         Start-Sleep -Milliseconds 300
     }
     $info = Get-Content $reportPath -Raw | ConvertFrom-Json
-    Write-Host "探针 pid=$($proc.Id) 监听=$($info.bind) 访问地址=$($info.advertise_url) 配对码=$($info.code)" -ForegroundColor Green
-    return [pscustomobject]@{ Proc = $proc; Info = $info; Out = $out; Err = $err }
+    # 探针 report 字段兼容：旧版 advertise_url/bind，新版 lan_url/bound。
+    $lanBase = if ($info.advertise_url) { $info.advertise_url } elseif ($info.lan_url) { $info.lan_url } else { "http://127.0.0.1:$($info.port)" }
+    $bindText = if ($info.bind) { $info.bind } else { $info.bound }
+    $script:lanBase = $lanBase
+    Write-Host "探针 pid=$($proc.Id) 监听=$bindText 访问地址=$lanBase 配对码=$($info.code)" -ForegroundColor Green
+    return [pscustomobject]@{ Proc = $proc; Info = $info; LanBase = $lanBase; Out = $out; Err = $err }
 }
 
 function Stop-Probe($handle) {
@@ -445,7 +449,7 @@ if (-not $SkipScreenshot) {
         try {
             Write-Section "阶段 A$shotIndex：$($s.name)（探针 127.0.0.1:$shotPort）"
             $handle = Start-Probe $shotPort
-            $script:lanBase = $handle.Info.advertise_url
+            $script:lanBase = $handle.LanBase
             if ($s.path) { $url = "$($script:lanBase)$($s.path)" }
             else { $url = "$($script:lanBase)/pair#$($handle.Info.code)" }
             Shot $s.name $url $s.out $s.js
@@ -472,8 +476,9 @@ try {
     $apiHandle = Start-Probe $Port
     $info = $apiHandle.Info
     $script:base = "http://127.0.0.1:$($info.port)"
-    $script:lanBase = $info.advertise_url
-    Write-Host "监听=$($info.bind)  访问地址=$($info.advertise_url)  配对码=$($info.code)  长会话=$($info.long_conv_id)"
+    $script:lanBase = if ($info.advertise_url) { $info.advertise_url } elseif ($info.lan_url) { $info.lan_url } else { "http://127.0.0.1:$($info.port)" }
+    $bindText = if ($info.bind) { $info.bind } else { $info.bound }
+    Write-Host "监听=$bindText  访问地址=$($script:lanBase)  配对码=$($info.code)  长会话=$($info.long_conv_id)"
 
     Write-Section '1. LAN 地址可达性（本次修复核心）：curl http://<LAN_IP>:<port>/healthz'
     $health = Invoke-Curl -Url "$($script:lanBase)/healthz"
@@ -633,6 +638,7 @@ try {
     Write-Host ("状态图例 = " + ($page.Contains('绿=正常') -and $page.Contains('红=严重中断')))
     Write-Host ("品牌 logo = " + ($page.Contains('class="brand-logo"') -and $page.Contains('/logo-64.png?v=')))
     Write-Host ("拖拽浮层 id = " + ($page.Contains('id="drop-overlay"') -and $page.Contains('id="drop-count"')))
+    Write-Host ("新建对话图标 = " + ($page.Contains('id="new-btn"') -and $page.Contains('title="新建对话"')))
     Write-Host ("md-core.js 引用 = " + $page.Contains('/md-core.js?v='))
     Write-Host ("附件按钮 id = " + $page.Contains('id="attach-btn"'))
     Write-Host ("文件选择 id = " + $page.Contains('id="file-input"'))
@@ -653,5 +659,7 @@ try {
 
 Write-Host ''
 Write-Host 'VERIFY_DONE' -ForegroundColor Green
+
+
 
 

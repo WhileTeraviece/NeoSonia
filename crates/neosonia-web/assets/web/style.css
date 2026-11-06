@@ -1,4 +1,4 @@
-/* NeoSonia 远程 SPA 样式
+﻿/* NeoSonia 远程 SPA 样式
  * 设计令牌来自 docs/ui-design-palette.json（Firefox Nova，dark 主题）。
  * 手机优先；桌面端居中 720px。零 emoji、零外链资源。 */
 
@@ -1139,15 +1139,22 @@ button { cursor: pointer; }
 }
 .md .code-copy {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
   background: transparent;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   color: var(--text-secondary);
-  font-size: 11.5px;
-  padding: 3px 10px;
-  min-height: 24px;
+  line-height: 1;
+  flex: 0 0 auto;
 }
 .md .code-copy:hover { border-color: var(--accent); color: var(--accent-hover); }
+.md .code-copy.copied { border-color: var(--success); color: var(--success); }
+.md .code-copy svg { display: block; }
 .md .code-block pre {
   margin: 0;
   padding: 10px 12px;
@@ -1623,3 +1630,53 @@ button { cursor: pointer; }
   }
   .app > .device-pane { overflow-y: auto; }
 }
+
+/* ============================================================
+   v0.7.4：图标化复制 / 新建对话（与桌面端一致）
+   ============================================================ */
+
+.msg-actions {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  padding: 2px 2px 0;
+}
+.msg-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+}
+.msg-copy:hover {
+  background: var(--surface-raised);
+  border-color: var(--border-subtle);
+  color: var(--accent-hover);
+}
+.msg-copy.copied { color: var(--success); }
+.msg-copy svg { display: block; }
+
+.list-tools #new-btn.new-btn {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  color: var(--text-secondary);
+}
+.list-tools #new-btn.new-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  background: var(--surface-raised);
+}
+.list-tools #new-btn.new-btn svg { display: block; }

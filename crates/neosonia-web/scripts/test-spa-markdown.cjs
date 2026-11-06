@@ -101,6 +101,10 @@ test('代码块：语言标注 + 复制按钮 + 转义 + 长行不换行', () =>
   assert.ok(html.includes('class="code-lang"'), html);
   assert.ok(html.includes('>python<'), html);
   assert.ok(html.includes('class="code-copy"'), html);
+  assert.ok(html.includes('title="复制代码"'), '复制按钮应有 tooltip');
+  assert.ok(html.includes('aria-label="复制代码"'), '复制按钮应有 aria-label');
+  assert.ok(!html.includes('>复制<'), '复制按钮应改为图标');
+  assert.ok(html.includes('class="ic-copy"'), '复制按钮应含 SVG 图标');
   assert.ok(html.includes('&lt;script&gt;'), '代码内容必须转义');
   assert.ok(!html.includes('<script>'), '代码内容不能注入标签');
   assert.ok(html.includes(longLine.replace(/</g, '&lt;')), '长行应完整保留（由 CSS 横向滚动）');
@@ -207,3 +211,4 @@ if (failures.length) {
   process.exit(1);
 }
 console.log('\nSPA_MARKDOWN_TESTS_PASS ' + passed);
+

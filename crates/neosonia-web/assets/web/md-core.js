@@ -268,7 +268,11 @@
         var lang = t.body.lang || '文本';
         return '<div class="code-block">' +
           '<div class="code-head"><span class="code-lang">' + esc(lang) + '</span>' +
-          '<button class="code-copy" type="button">复制</button></div>' +
+          '<button class="code-copy" type="button" title="复制代码" aria-label="复制代码">' +
+          '<svg class="ic-copy" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>' +
+          '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>' +
+          '</svg></button></div>' +
           '<pre><code>' + esc(t.body.code) + '</code></pre></div>';
       }
       return renderMath(t.body, true);
@@ -448,5 +452,7 @@
     splitAttachments: splitAttachments
   };
 });
+
+
 
 

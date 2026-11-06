@@ -444,6 +444,27 @@ mod tests {
     }
 
     #[test]
+    fn icon_copy_and_new_conversation_hooks_exist() {
+        // v0.7.4：复制按钮图标化 + 助手消息「复制完整回复」+ 新建对话加号图标。
+        assert!(
+            INDEX_HTML.contains("id=\"new-btn\"") && INDEX_HTML.contains("title=\"新建对话\""),
+            "新建对话应为 + 图标按钮"
+        );
+        assert!(
+            !INDEX_HTML.contains(">新对话<"),
+            "列表页不应再显示「新对话」文字按钮"
+        );
+        assert!(APP_JS.contains("msg-copy"), "缺少复制完整回复按钮");
+        assert!(APP_JS.contains("复制完整回复"), "缺少 tooltip 文案");
+        assert!(APP_JS.contains("copyWithFeedback"), "缺少复制反馈");
+        assert!(APP_JS.contains("ICON_CHECK"), "复制成功应短暂变勾");
+        assert!(MD_CORE_JS.contains("aria-label=\"复制代码\""), "代码块复制应有 aria-label");
+        assert!(MD_CORE_JS.contains("ic-copy"), "代码块复制应为图标");
+        assert!(STYLE_CSS.contains(".msg-copy"), "缺少完整回复按钮样式");
+        assert!(STYLE_CSS.contains(".msg-actions"), "缺少消息底部操作行样式");
+    }
+
+    #[test]
     fn no_emoji_in_assets() {
         // 零 emoji：检查常见 emoji 区段（代理对与符号区）。
         fn has_emoji(s: &str) -> bool {
@@ -465,6 +486,7 @@ mod tests {
         }
     }
 }
+
 
 
 

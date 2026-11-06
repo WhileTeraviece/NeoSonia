@@ -93,6 +93,16 @@ async fn main() -> anyhow::Result<()> {
         conversations.append(&long_id, &msg)?;
     }
 
+    // v0.7.4：复制按钮测试会话（短回复 + 一个代码块 + 行内公式，方便一屏截到两个复制图标）。
+    let copy_id = conversations.ensure(Some("probe-copy"), "复制按钮测试", "default")?;
+    conversations.append(&copy_id, &ChatMessage::user("给我一段示例代码和公式。"))?;
+    conversations.append(
+        &copy_id,
+        &ChatMessage::assistant(
+            "这里是示例：\n\n```python\nprint(\"hello copy\")\n```\n\n行内公式 $E=mc^2$，可以直接复制整条回复。",
+        ),
+    )?;
+
     // 造一张假截图，验证 /api/screenshot/{name} 的鉴权与防穿越。
     let shot_path = paths.screenshots.join("probe-shot.png");
     let img = image::ImageBuffer::from_pixel(240, 160, image::Rgba([28u8, 24, 36, 255]));
@@ -221,3 +231,4 @@ async fn main() -> anyhow::Result<()> {
     println!("PROBE 已停止");
     Ok(())
 }
+

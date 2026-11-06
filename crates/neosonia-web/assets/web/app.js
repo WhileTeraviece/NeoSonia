@@ -696,6 +696,8 @@
       mountScreenshots(md, m.content || '');
       container.appendChild(md);
       node.appendChild(container);
+      // v0.7.4：助手消息底部右侧「复制完整回复」（纯文本，含代码/公式源文本）。
+      node.appendChild(replyActions(function () { return m.content || ''; }));
       return node;
     }
     if (m.role === 'tool') {
@@ -953,6 +955,15 @@
       ensureReasoningBox();
     }
     paintTurnNow();
+    // 流式输出中不显示复制按钮；本条完整回复落定后加一次（避免重复）。
+    if (!state.turn.replyRow) {
+      var snapshot = state.turn.text;
+      state.turn.replyRow = replyActions(function () {
+        return state.turn ? state.turn.text : snapshot;
+      });
+      state.turn.node.appendChild(state.turn.replyRow);
+      scrollBottom();
+    }
   }
 
   function beginTurn(userText) {
@@ -1376,25 +1387,64 @@
     btn.disabled = !!state.sendBusy || (!hasText && !hasAttachment) || (uploading && !hasText);
   }
 
+  /* ================= 复制：图标按钮（代码块 / 完整回复） ================= */
+
+  var ICON_COPY = '<svg class="ic-copy" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  var ICON_CHECK = '<svg class="ic-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"></path></svg>';
+
+  /// 统一复制反馈：成功后图标短暂变勾（1.5s），失败回退手动复制/提示。
+  function copyWithFeedback(text, btn, failMsg) {
+    var value = String(text === undefined || text === null ? '' : text);
+    if (!value || !btn) return;
+    function done() {
+      if (btn.dataset.copying) return;
+      btn.dataset.copying = '1';
+      var original = btn.innerHTML;
+      btn.innerHTML = ICON_CHECK;
+      btn.classList.add('copied');
+      setTimeout(function () {
+        btn.innerHTML = original;
+        btn.classList.remove('copied');
+        delete btn.dataset.copying;
+      }, 1500);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).then(done).catch(function () { fallbackCopy(value, done, failMsg); });
+    } else {
+      fallbackCopy(value, done, failMsg);
+    }
+  }
+
   function copyCodeText(btn) {
     var block = btn.closest ? btn.closest('.code-block') : null;
     if (!block) return;
     var codeEl = block.querySelector('code');
     var text = codeEl ? codeEl.textContent : '';
-    if (!text) return;
-    function done() {
-      var old = btn.textContent;
-      btn.textContent = '已复制';
-      setTimeout(function () { btn.textContent = old; }, 1500);
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
-    } else {
-      fallbackCopy(text, done);
-    }
+    // 只复制纯代码原文（不含语言标签/行号/UI 文案）。
+    copyWithFeedback(text, btn, '复制失败，请长按选择代码');
   }
 
-  function fallbackCopy(text, done) {
+  /// 助手消息底部右侧的「复制完整回复」图标按钮。
+  function makeReplyCopyButton(getText) {
+    var btn = el('button', 'msg-copy');
+    btn.type = 'button';
+    btn.title = '复制完整回复';
+    btn.setAttribute('aria-label', '复制完整回复');
+    btn.innerHTML = ICON_COPY;
+    btn.addEventListener('click', function (ev) {
+      if (ev) ev.stopPropagation();
+      copyWithFeedback(String(getText() || ''), btn, '复制失败，请长按选择文本');
+    });
+    return btn;
+  }
+
+  function replyActions(getText) {
+    var row = el('div', 'msg-actions');
+    row.appendChild(makeReplyCopyButton(getText));
+    return row;
+  }
+
+  function fallbackCopy(text, done, failMsg) {
     var ta = document.createElement('textarea');
     ta.value = text;
     ta.style.position = 'fixed';
@@ -1405,7 +1455,7 @@
     try { ok = document.execCommand('copy'); } catch (e) {}
     document.body.removeChild(ta);
     if (ok) done();
-    else toast('复制失败，请长按选择代码');
+    else toast(failMsg || '复制失败，请长按选择文本');
   }
 
   /* ================= 截图附件 ================= */
@@ -2261,6 +2311,7 @@
     boot();
   }
 })();
+
 
 
 
