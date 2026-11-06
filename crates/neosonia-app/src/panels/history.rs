@@ -106,7 +106,10 @@ fn header(st: &AppState, c: &UiColors) -> Element<Msg> {
                     .color(c.text_muted),
             )),
             row().gap(space::SM).items_center().shrink0().children((
-                button("新建对话")
+                icon_button(icons::lucide::plus())
+            .size(ControlSize::Sm)
+            .variant(ButtonVariant::Secondary)
+            .label("新建对话")
                     .variant(ButtonVariant::Secondary)
                     .size(ControlSize::Sm)
                     .on_click(Msg::HistoryNew)

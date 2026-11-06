@@ -437,7 +437,7 @@ fn rich_body(body: &str, c: &UiColors, roots: &PathRoots) -> Vec<Element<Msg>> {
         let mut out: Vec<Element<Msg>> = Vec::new();
         for chunk in chunks {
             match chunk {
-                BodyChunk::Code { lang, code } => out.push(code_block(&lang, &code, c)),
+                BodyChunk::Code { lang, code } => out.push(code_block(&lang, &code, c, Some(Msg::Copy(code.clone())))),
                 BodyChunk::Text(t) => {
                     if !t.trim().is_empty() {
                         out.extend(rich_body(&t, c, roots));
@@ -839,7 +839,7 @@ fn split_code_blocks(body: &str) -> Vec<BodyChunk> {
 ///
 /// 注意：`assistant_block` 会先给正文插零宽空格帮长串换行，代码里必须剔除，
 /// 否则会改变代码内容、也会让宽度估算和横向滚动失效。
-fn code_block<Msg>(lang: &str, code: &str, c: &UiColors) -> Element<Msg> {
+fn code_block<Msg: Clone>(lang: &str, code: &str, c: &UiColors, copy_msg: Option<Msg>) -> Element<Msg> {
     let code: String = code
         .chars()
         .filter(|ch| {
@@ -866,10 +866,24 @@ fn code_block<Msg>(lang: &str, code: &str, c: &UiColors) -> Element<Msg> {
     let content_w = (max_chars as f32 * size.px() * 0.72).max(120.0) + 24.0;
 
     let label = if lang.is_empty() { "text" } else { lang };
+    // 语言标签 + 一键复制代码（图标按钮，复制的是去掉零宽字符后的原始代码）。
+    let copy_el: Element<Msg> = match copy_msg {
+        Some(msg) => icon_button(icons::lucide::copy())
+            .size(ControlSize::Sm)
+            .variant(ButtonVariant::Ghost)
+            .label("复制代码")
+            .on_click(msg)
+            .into(),
+        None => col().h(0.0).into(),
+    };
     let header = row()
         .w_full()
-        .justify_end()
-        .children((text(label).size(TextSize::Xs).mono().color(c.text_subtle),));
+        .items_center()
+        .justify_between()
+        .children((
+            text(label).size(TextSize::Xs).mono().color(c.text_subtle),
+            copy_el,
+        ));
 
     let code_text = text(code.to_string())
         .size(size)
@@ -997,6 +1011,28 @@ fn assistant_block(
                 .bg(c.danger_bg.with_alpha(0.35))
                 .border(1.0, c.danger.with_alpha(0.5))
                 .children((text(e).size(TextSize::Sm).color(c.danger),)),
+        );
+    }
+
+    // 一键复制完整回复（图标按钮，仅非流式且正文非空时显示）。
+    if !streaming && !body.trim().is_empty() {
+        col_items.push(
+            row()
+                .w_full()
+                .justify_end()
+                .children((
+                    {
+                        let reply = body.to_string();
+                        let el: Element<Msg> = icon_button(icons::lucide::copy())
+                            .size(ControlSize::Sm)
+                            .variant(ButtonVariant::Ghost)
+                            .label("复制完整回复")
+                            .on_click(Msg::Copy(reply))
+                            .into();
+                        el
+                    },
+                ))
+                .into(),
         );
     }
 
@@ -1711,9 +1747,9 @@ mod tests {
         // 模拟 soft_wrap_breaks：代码里插入零宽空格，渲染前应剔除
         let long = "abcdefghij".repeat(16);
         let with_zwsp = format!("let value = \"{}{long}\";", "\u{200B}");
-        let _: Element<Msg> = code_block("rust", &with_zwsp, &c);
-        let _: Element<Msg> = code_block("", "a\nb\nc", &c);
-        let _: Element<Msg> = code_block("rust", "", &c);
+        let _: Element<Msg> = code_block("rust", &with_zwsp, &c, Some(Msg::Copy(with_zwsp.clone())));
+        let _: Element<Msg> = code_block("", "a\nb\nc", &c, None);
+        let _: Element<Msg> = code_block("rust", "", &c, None);
         // 走完整 rich_body：代码块 + 说明文字都能构建
         let body = format!("说明\n```rust\n{}\n```\n结尾", long);
         let els: Vec<Element<Msg>> = rich_body(&body, &c, &PathRoots::for_tests());
@@ -1905,7 +1941,7 @@ mod harness_tests {
                 .w(424.0)
                 .p(space::MD)
                 .gap(space::XS)
-                .children((code_block::<HMsg>("rust", &self.code, &c),))
+                .children((code_block::<HMsg>("rust", &self.code, &c, None),))
                 .into()
         }
     }
