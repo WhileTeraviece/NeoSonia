@@ -82,12 +82,25 @@ fn header(st: &AppState, c: &UiColors) -> Element<Msg> {
     };
     row()
         .w_full()
-        .items_end()
+        .items_start()
         .justify_between()
         .gap(space::MD)
         .children((
-            col().grow().gap(2.0).children((
-                row().items_center().gap(space::SM).children((
+            // 返回按钮放标题左侧（与邮件页一致），右侧只留「新建对话」。
+            row()
+                .grow()
+                .min_w(0.0)
+                .items_start()
+                .gap(space::SM)
+                .children((
+                    icon_button(icons::lucide::arrow_left())
+                        .size(ControlSize::Sm)
+                        .variant(ButtonVariant::Ghost)
+                        .label("返回对话")
+                        .on_click(back_msg)
+                        .id("history-back"),
+                    col().grow().min_w(0.0).gap(space::XS).children((
+                        row().items_center().gap(space::SM).children((
                     text("历史")
                         .size(TextSize::Lg)
                         .weight(Weight::Semibold)
@@ -101,28 +114,19 @@ fn header(st: &AppState, c: &UiColors) -> Element<Msg> {
                         col().w(0.0)
                     },
                 )),
-                text("搜索过去的会话与消息；打开会话会载入到对话页继续聊。")
-                    .size(TextSize::Xs)
-                    .color(c.text_muted),
-            )),
-            row().gap(space::SM).items_center().shrink0().children((
-                icon_button(icons::lucide::plus())
-            .size(ControlSize::Sm)
-            .variant(ButtonVariant::Secondary)
-            .label("新建对话")
-                    .variant(ButtonVariant::Secondary)
-                    .size(ControlSize::Sm)
-                    .on_click(Msg::HistoryNew)
-                    .id("history-new"),
-                button("返回对话")
-                    .variant(ButtonVariant::Ghost)
-                    .size(ControlSize::Sm)
-                    .on_click(back_msg)
-                    .id("history-back"),
-            )),
+                        text("搜索过去的会话与消息；打开会话会载入到对话页继续聊。")
+                            .size(TextSize::Xs)
+                            .color(c.text_muted),
+                    )),
+                )),
+            icon_button(icons::lucide::plus())
+                .size(ControlSize::Sm)
+                .variant(ButtonVariant::Secondary)
+                .label("新建对话")
+                .on_click(Msg::HistoryNew)
+                .id("history-new"),
         ))
 }
-
 fn search_row(st: &AppState, c: &UiColors) -> Element<Msg> {
     let input: Element<Msg> = text_input(st.history.query.clone())
         .placeholder("搜索会话标题或消息内容，回车搜索")
