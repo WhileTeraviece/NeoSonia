@@ -161,9 +161,11 @@ fn toolbar(st: &AppState, c: &UiColors) -> Element<Msg> {
         .children((
             left,
             busy_indicator,
-            button("刷新")
+            // 与设备页一致：刷新收件箱用图标按钮（tooltip 说明），放头部右侧。
+            icon_button(icons::lucide::refresh_cw())
                 .variant(ButtonVariant::Secondary)
                 .size(ControlSize::Sm)
+                .label("刷新收件箱")
                 .on_click(Msg::MailRefresh)
                 .id("mail-refresh"),
         ))
@@ -191,9 +193,10 @@ fn setup_guide(c: &UiColors) -> Element<Msg> {
                     .size(ControlSize::Sm)
                     .on_click(Msg::Nav(NavPage::Settings))
                     .id("mail-go-settings"),
-                button("刷新收件箱")
+                icon_button(icons::lucide::refresh_cw())
                     .variant(ButtonVariant::Secondary)
                     .size(ControlSize::Sm)
+                    .label("刷新收件箱")
                     .on_click(Msg::MailRefresh)
                     .id("mail-refresh-guide"),
             )).into(),
