@@ -3650,7 +3650,7 @@ dependencies = [
 
 [[package]]
 name = "neosonia-app"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3686,7 +3686,7 @@ dependencies = [
 
 [[package]]
 name = "neosonia-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3722,7 +3722,7 @@ dependencies = [
 
 [[package]]
 name = "neosonia-mail"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3746,7 +3746,7 @@ dependencies = [
 
 [[package]]
 name = "neosonia-mcp"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3761,7 +3761,7 @@ dependencies = [
 
 [[package]]
 name = "neosonia-tools"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3797,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "neosonia-web"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "axum",

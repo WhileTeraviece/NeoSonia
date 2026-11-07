@@ -1,4 +1,6 @@
-﻿# NeoSonia v1.0.1 Release Notes（草案，待验收后发布）
+﻿# NeoSonia v1.0.1 Release Notes
+
+2026-11-07。
 
 ## 本版重点
 
