@@ -1,4 +1,4 @@
-//! 输入模拟工具：鼠标移动/点击/拖拽/滚轮、按住与松开、键盘输入/按键、剪贴板。
+﻿//! 输入模拟工具：鼠标移动/点击/拖拽/滚轮、按住与松开、键盘输入/按键、剪贴板。
 //!
 //! 坐标约定：一律**物理像素**（与 enigo 在 Windows 上一致）。
 //! 所有系统调用都放进 `spawn_blocking`，每次调用新建 enigo 实例，
@@ -414,6 +414,69 @@ fn resolve_point(logical: bool, x: i64, y: i64) -> (i32, i32) {
     }
 }
 
+// ============================================================
+// 自适应坐标：屏幕物理像素 ⇄ 最近一次截图的图片像素
+// ============================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CoordSpace {
+    /// 屏幕物理像素（默认，网格刻度/UIA rect 都是这个）。
+    Screen,
+    /// 最近一次 screenshot 返回的图片像素（可能被 max_edge 缩小）。
+    Image,
+}
+
+fn parse_coord_space(args: &Value) -> Result<CoordSpace, String> {
+    match arg_str(args, "coord_space") {
+        None => Ok(CoordSpace::Screen),
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "screen" | "physical" => Ok(CoordSpace::Screen),
+            "image" | "img" | "picture" => Ok(CoordSpace::Image),
+            other => Err(format!(
+                "coord_space 只能是 \"screen\"（默认，屏幕物理像素）或 \"image\"（截图图片像素），收到 {other:?}。"
+            )),
+        },
+    }
+}
+
+/// 把一批坐标换算成屏幕物理像素；`coord_space="image"` 时用最近一次截图契约自动乘 scale。
+/// 返回 (换算后坐标, 回显说明)；回显用于工具输出，方便模型核对。
+fn convert_coords(
+    coord_space: CoordSpace,
+    logical: bool,
+    points: &[(i64, i64)],
+) -> Result<(Vec<(i64, i64)>, Option<String>), String> {
+    if coord_space == CoordSpace::Screen {
+        return Ok((points.to_vec(), None));
+    }
+    if logical {
+        return Err(
+            "coord_space=\"image\" 与 logical=true 不能同时使用：图片坐标本身已经对应屏幕像素空间。"
+                .to_string(),
+        );
+    }
+    let contract = crate::screen::last_screenshot_contract().ok_or_else(|| {
+        "还没有可用的截图坐标契约：请先调用 screenshot（建议 grid:true，10 分钟内有效）再传 coord_space=\"image\"。"
+            .to_string()
+    })?;
+    let converted: Vec<(i64, i64)> = points
+        .iter()
+        .map(|(x, y)| {
+            let (screen_x, screen_y) = contract.image_to_screen(*x, *y);
+            (screen_x as i64, screen_y as i64)
+        })
+        .collect();
+    let echo = points
+        .iter()
+        .zip(converted.iter())
+        .map(|((image_x, image_y), (screen_x, screen_y))| {
+            format!("图片({image_x},{image_y}) → 屏幕({screen_x},{screen_y})")
+        })
+        .collect::<Vec<_>>()
+        .join("；");
+    Ok((converted, Some(echo)))
+}
+
 /// 折线插值（纯函数）：把 points 均匀切成 `steps` 段步进点，用于模拟人手拖拽。
 fn interpolate_path(points: &[(i32, i32)], steps: u32) -> Vec<(i32, i32)> {
     if points.len() < 2 || steps < 2 {
@@ -478,21 +541,36 @@ async fn mouse_move(ctx: &ToolCtx, args: Value) -> ToolOutcome {
     if let Err(e) = input_allowed(ctx) {
         return e;
     }
-    let Some(x) = args.get("x").map(|_| arg_i64(&args, "x", 0)) else {
+    let Some(raw_x) = args.get("x").map(|_| arg_i64(&args, "x", 0)) else {
         return ToolOutcome::err("缺少必填参数 x（物理像素横坐标）。".to_string());
     };
-    let Some(y) = args.get("y").map(|_| arg_i64(&args, "y", 0)) else {
+    let Some(raw_y) = args.get("y").map(|_| arg_i64(&args, "y", 0)) else {
         return ToolOutcome::err("缺少必填参数 y（物理像素纵坐标）。".to_string());
     };
+    let logical = arg_bool(&args, "logical", false);
+    let coord_space = match parse_coord_space(&args) {
+        Ok(space) => space,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let (points, coord_note) = match convert_coords(coord_space, logical, &[(raw_x, raw_y)]) {
+        Ok(value) => value,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let (x, y) = points[0];
     if x < -100_000 || x > 100_000 || y < -100_000 || y > 100_000 {
         return ToolOutcome::err(format!("坐标 ({x}, {y}) 超出合理范围。坐标单位是物理像素。"));
     }
     let smooth = arg_bool(&args, "smooth", true);
-    let logical = arg_bool(&args, "logical", false);
+    let coord_note_text = coord_note.clone();
     run_input(
         format!(
-            "移动到 ({x}, {y}){}",
-            if logical { "（逻辑坐标）" } else { "" }
+            "移动到 ({x}, {y}){}{}",
+            if logical { "（逻辑坐标）" } else { "" },
+            if coord_space == CoordSpace::Image {
+                "（图片坐标）"
+            } else {
+                ""
+            }
         ),
         move |enigo| {
             let (xi, yi) = resolve_point(logical, x, y);
@@ -504,13 +582,17 @@ async fn mouse_move(ctx: &ToolCtx, args: Value) -> ToolOutcome {
                     .map_err(|e| format!("移动鼠标失败：{e}"))?;
             }
             Ok(format!(
-                "[ok] 鼠标已移动到物理像素 ({xi}, {yi}){}{}",
+                "[ok] 鼠标已移动到物理像素 ({xi}, {yi}){}{}{}",
                 if logical {
                     format!("（由逻辑坐标 ({x}, {y}) 换算）")
                 } else {
                     String::new()
                 },
-                if smooth { "（平滑移动）" } else { "" }
+                if smooth { "（平滑移动）" } else { "" },
+                coord_note_text
+                    .as_ref()
+                    .map(|note| format!("\n坐标换算：{note}"))
+                    .unwrap_or_default()
             ))
         },
     )
@@ -558,9 +640,27 @@ async fn mouse_click(ctx: &ToolCtx, args: Value) -> ToolOutcome {
     if has_x != has_y {
         return ToolOutcome::err("x 和 y 必须同时提供，或者都不提供（点击当前位置）。".to_string());
     }
-    let target = if has_x {
-        Some((arg_i64(&args, "x", 0), arg_i64(&args, "y", 0)))
+    let logical = arg_bool(&args, "logical", false);
+    let coord_space = match parse_coord_space(&args) {
+        Ok(space) => space,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let mut coord_note: Option<String> = None;
+    let target: Option<(i64, i64)> = if has_x {
+        let raw = (arg_i64(&args, "x", 0), arg_i64(&args, "y", 0));
+        match convert_coords(coord_space, logical, &[raw]) {
+            Ok((converted, note)) => {
+                coord_note = note;
+                Some(converted[0])
+            }
+            Err(e) => return ToolOutcome::err(e),
+        }
     } else {
+        if coord_space == CoordSpace::Image {
+            return ToolOutcome::err(
+                "coord_space=\"image\" 需要同时提供 x 和 y（图片像素坐标）。".to_string(),
+            );
+        }
         None
     };
     let button_name = arg_str(&args, "button").unwrap_or_else(|| "left".to_string());
@@ -577,7 +677,6 @@ async fn mouse_click(ctx: &ToolCtx, args: Value) -> ToolOutcome {
         legacy_clicks,
         arg_u64(&args, "interval_ms", 80),
     );
-    let logical = arg_bool(&args, "logical", false);
     let description = if double && button == Button::Left {
         "双击（左键）".to_string()
     } else if double {
@@ -585,6 +684,7 @@ async fn mouse_click(ctx: &ToolCtx, args: Value) -> ToolOutcome {
     } else {
         format!("{}点击 {} 次", button_label(button), clicks)
     };
+    let coord_note_text = coord_note.clone();
     run_input(description.clone(), move |enigo| {
         if let Some((x, y)) = target {
             let (px, py) = resolve_point(logical, x, y);
@@ -602,7 +702,7 @@ async fn mouse_click(ctx: &ToolCtx, args: Value) -> ToolOutcome {
             }
         }
         Ok(format!(
-            "[ok] 已{}{}{}",
+            "[ok] 已{}{}{}{}",
             if target.is_some() { "移动到目标位置并" } else { "" },
             description,
             target
@@ -610,6 +710,10 @@ async fn mouse_click(ctx: &ToolCtx, args: Value) -> ToolOutcome {
                     "，位置 ({x}, {y}){}",
                     if logical { "（逻辑坐标）" } else { "" }
                 ))
+                .unwrap_or_default(),
+            coord_note_text
+                .as_ref()
+                .map(|note| format!("\n坐标换算：{note}"))
                 .unwrap_or_default()
         ))
     })
@@ -695,12 +799,39 @@ async fn mouse_click_sequence(ctx: &ToolCtx, args: Value) -> ToolOutcome {
         return e;
     }
     let interval_ms = arg_u64(&args, "interval_ms", 120).min(5000);
-    let steps = match parse_click_sequence(args.get("points"), interval_ms) {
+    let mut steps = match parse_click_sequence(args.get("points"), interval_ms) {
         Ok(steps) => steps,
         Err(e) => return ToolOutcome::err(e),
     };
+    // 自适应坐标：coord_space="image" 时按最近一次截图的比例换算每个点
+    let coord_space = match parse_coord_space(&args) {
+        Ok(space) => space,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    if coord_space == CoordSpace::Image && steps.iter().any(|step| step.logical) {
+        return ToolOutcome::err(
+            "coord_space=\"image\" 与 points 里的 logical=true 不能同时使用：图片坐标本身已经是屏幕像素空间。"
+                .to_string(),
+        );
+    }
+    let raw_coords: Vec<(i64, i64)> = steps
+        .iter()
+        .map(|step| (step.x as i64, step.y as i64))
+        .collect();
+    let (converted, coord_note) = match convert_coords(coord_space, false, &raw_coords) {
+        Ok(value) => value,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    for (step, (x, y)) in steps.iter_mut().zip(converted.iter()) {
+        if coord_space == CoordSpace::Image {
+            step.logical = false;
+        }
+        step.x = *x as i32;
+        step.y = *y as i32;
+    }
     let point_count = steps.len();
     let default_delay = steps.first().map(|step| step.delay_ms).unwrap_or(interval_ms);
+    let coord_note_text = coord_note.clone();
     let display = format!("连续点击 {point_count} 个点");
     let started = Instant::now();
     let result = enigo_blocking(move |enigo| {
@@ -736,9 +867,13 @@ async fn mouse_click_sequence(ctx: &ToolCtx, args: Value) -> ToolOutcome {
             }
         }
         Ok(format!(
-            "[ok] 连续点击完成：执行 {executed}/{point_count} 个点，总耗时 {}ms（默认步间 {}ms）。",
+            "[ok] 连续点击完成：执行 {executed}/{point_count} 个点，总耗时 {}ms（默认步间 {}ms）。{}",
             started.elapsed().as_millis(),
-            default_delay
+            default_delay,
+            coord_note_text
+                .as_ref()
+                .map(|note| format!("\n坐标换算：{note}"))
+                .unwrap_or_default()
         ))
     })
     .await;
@@ -1406,10 +1541,29 @@ async fn mouse_drag(ctx: &ToolCtx, args: Value) -> ToolOutcome {
         Err(e) => return ToolOutcome::err(e),
     };
     let logical = arg_bool(&args, "logical", false);
+    let coord_space = match parse_coord_space(&args) {
+        Ok(space) => space,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let (points, coord_note) = match convert_coords(
+        coord_space,
+        logical,
+        &[(from_x, from_y), (to_x, to_y)],
+    ) {
+        Ok(value) => value,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let ((from_x, from_y), (to_x, to_y)) = (points[0], points[1]);
+    let coord_note_text = coord_note.clone();
     run_input(
         format!(
-            "拖拽 ({from_x},{from_y}) -> ({to_x},{to_y}){}",
-            if logical { "（逻辑坐标）" } else { "" }
+            "拖拽 ({from_x},{from_y}) -> ({to_x},{to_y}){}{}",
+            if logical { "（逻辑坐标）" } else { "" },
+            if coord_space == CoordSpace::Image {
+                "（图片坐标）"
+            } else {
+                ""
+            }
         ),
         move |enigo| {
             let (fx, fy) = resolve_point(logical, from_x, from_y);
@@ -1426,7 +1580,13 @@ async fn mouse_drag(ctx: &ToolCtx, args: Value) -> ToolOutcome {
             enigo
                 .button(button, Direction::Release)
                 .map_err(|e| format!("释放鼠标失败：{e}"))?;
-            Ok(format!("[ok] 已从 ({fx}, {fy}) 拖拽到 ({tx}, {ty})"))
+            Ok(format!(
+                "[ok] 已从 ({fx}, {fy}) 拖拽到 ({tx}, {ty}){}",
+                coord_note_text
+                    .as_ref()
+                    .map(|note| format!("\n坐标换算：{note}"))
+                    .unwrap_or_default()
+            ))
         },
     )
     .await
@@ -1442,9 +1602,27 @@ async fn mouse_press(ctx: &ToolCtx, args: Value) -> ToolOutcome {
     if has_x != has_y {
         return ToolOutcome::err("x 和 y 必须同时提供，或者都不提供。".to_string());
     }
-    let target = if has_x {
-        Some((arg_i64(&args, "x", 0), arg_i64(&args, "y", 0)))
+    let logical = arg_bool(&args, "logical", false);
+    let coord_space = match parse_coord_space(&args) {
+        Ok(space) => space,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let mut coord_note: Option<String> = None;
+    let target: Option<(i64, i64)> = if has_x {
+        let raw = (arg_i64(&args, "x", 0), arg_i64(&args, "y", 0));
+        match convert_coords(coord_space, logical, &[raw]) {
+            Ok((converted, note)) => {
+                coord_note = note;
+                Some(converted[0])
+            }
+            Err(e) => return ToolOutcome::err(e),
+        }
     } else {
+        if coord_space == CoordSpace::Image {
+            return ToolOutcome::err(
+                "coord_space=\"image\" 需要同时提供 x 和 y（图片像素坐标）。".to_string(),
+            );
+        }
         None
     };
     let button_name = arg_str(&args, "button").unwrap_or_else(|| "left".to_string());
@@ -1459,10 +1637,10 @@ async fn mouse_press(ctx: &ToolCtx, args: Value) -> ToolOutcome {
             button_label(button)
         ));
     }
-    let logical = arg_bool(&args, "logical", false);
     ensure_release_on_exit();
     let label = button_label(button);
     let display = format!("按下{label}");
+    let coord_note_text = coord_note.clone();
     let result = enigo_blocking(move |enigo| {
         if let Some((x, y)) = target {
             let (px, py) = resolve_point(logical, x, y);
@@ -1475,9 +1653,13 @@ async fn mouse_press(ctx: &ToolCtx, args: Value) -> ToolOutcome {
             .button(button, Direction::Press)
             .map_err(|e| format!("按下鼠标失败：{e}"))?;
         Ok(format!(
-            "[ok] 已按下{label}并保持不松{}\n现在可以用 mouse_move 移动到目标，再用 mouse_release 松开（或 mouse_release 带 x/y 先移动再松）。",
+            "[ok] 已按下{label}并保持不松{}\n现在可以用 mouse_move 移动到目标，再用 mouse_release 松开（或 mouse_release 带 x/y 先移动再松）。{}",
             target
                 .map(|(x, y)| format!("，位置 ({x}, {y}){}", if logical { "（逻辑坐标）" } else { "" }))
+                .unwrap_or_default(),
+            coord_note_text
+                .as_ref()
+                .map(|note| format!("\n坐标换算：{note}"))
                 .unwrap_or_default()
         ))
     })
@@ -1501,9 +1683,27 @@ async fn mouse_release(ctx: &ToolCtx, args: Value) -> ToolOutcome {
     if has_x != has_y {
         return ToolOutcome::err("x 和 y 必须同时提供，或者都不提供。".to_string());
     }
-    let target = if has_x {
-        Some((arg_i64(&args, "x", 0), arg_i64(&args, "y", 0)))
+    let logical = arg_bool(&args, "logical", false);
+    let coord_space = match parse_coord_space(&args) {
+        Ok(space) => space,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let mut coord_note: Option<String> = None;
+    let target: Option<(i64, i64)> = if has_x {
+        let raw = (arg_i64(&args, "x", 0), arg_i64(&args, "y", 0));
+        match convert_coords(coord_space, logical, &[raw]) {
+            Ok((converted, note)) => {
+                coord_note = note;
+                Some(converted[0])
+            }
+            Err(e) => return ToolOutcome::err(e),
+        }
     } else {
+        if coord_space == CoordSpace::Image {
+            return ToolOutcome::err(
+                "coord_space=\"image\" 需要同时提供 x 和 y（图片像素坐标）。".to_string(),
+            );
+        }
         None
     };
     let explicit_button = match arg_str(&args, "button") {
@@ -1562,6 +1762,9 @@ async fn mouse_release(ctx: &ToolCtx, args: Value) -> ToolOutcome {
             if explicit_button.is_some() && !was_held {
                 msg.push_str("\n（该键之前未记录为按下，已补发一次松开事件）");
             }
+            if let Some(note) = &coord_note {
+                msg.push_str(&format!("\n坐标换算：{note}"));
+            }
             ToolOutcome::ok(msg).with_display(display)
         }
         Err(e) => ToolOutcome::err(e),
@@ -1593,8 +1796,30 @@ async fn mouse_drag_path(ctx: &ToolCtx, args: Value) -> ToolOutcome {
     let duration_ms = arg_u64(&args, "duration_ms", 600).clamp(50, 20_000);
     let hold_ms = arg_u64(&args, "hold_ms", 0).min(60_000);
     let logical = arg_bool(&args, "logical", false);
+    let coord_space = match parse_coord_space(&args) {
+        Ok(space) => space,
+        Err(e) => return ToolOutcome::err(e),
+    };
+    let raw_points_i64: Vec<(i64, i64)> = raw_points
+        .iter()
+        .map(|&(x, y)| (x as i64, y as i64))
+        .collect();
+    let (converted_points, coord_note) =
+        match convert_coords(coord_space, logical, &raw_points_i64) {
+            Ok(value) => value,
+            Err(e) => return ToolOutcome::err(e),
+        };
+    let raw_points: Vec<(i64, i64)> = converted_points;
     let point_count = raw_points.len();
-    let display = format!("沿 {point_count} 个点拖拽（约 {duration_ms}ms）");
+    let coord_note_text = coord_note.clone();
+    let display = format!(
+        "沿 {point_count} 个点拖拽（约 {duration_ms}ms）{}",
+        if coord_space == CoordSpace::Image {
+            "（图片坐标）"
+        } else {
+            ""
+        }
+    );
     run_input(display, move |enigo| {
         let points: Vec<(i32, i32)> = raw_points
             .iter()
@@ -1629,11 +1854,15 @@ async fn mouse_drag_path(ctx: &ToolCtx, args: Value) -> ToolOutcome {
             .button(button, Direction::Release)
             .map_err(|e| format!("释放鼠标失败：{e}"))?;
         Ok(format!(
-            "[ok] 已沿 {point_count} 个点拖拽（实际 {} 步，约 {}ms，终点按住 {}ms）{}",
+            "[ok] 已沿 {point_count} 个点拖拽（实际 {} 步，约 {}ms，终点按住 {}ms）{}{}",
             path.len(),
             duration_ms,
             hold_ms,
-            if logical { "，坐标为逻辑坐标" } else { "" }
+            if logical { "，坐标为逻辑坐标" } else { "" },
+            coord_note_text
+                .as_ref()
+                .map(|note| format!("\n坐标换算：{note}"))
+                .unwrap_or_default()
         ))
     })
     .await
@@ -2098,14 +2327,16 @@ tool_impl!(
     "mouse_move",
     "把鼠标移动到指定的绝对坐标（默认物理像素）。smooth=true（默认）会平滑移动，\
      对需要悬停/拖拽的界面更自然；smooth=false 直接跳转。\
-     坐标是逻辑像素时传 logical=true，会按主屏缩放自动换算成物理像素。",
+     坐标是逻辑像素时传 logical=true，会按主屏缩放自动换算成物理像素。\
+     从截图估算的图片坐标传 coord_space=\"image\"，会按最近一次 screenshot 的 scale 自动换算成屏幕物理像素。",
     json!({
         "type": "object",
         "properties": {
             "x": {"type": "integer", "description": "横坐标（默认物理像素）"},
             "y": {"type": "integer", "description": "纵坐标（默认物理像素）"},
             "smooth": {"type": "boolean", "description": "是否平滑移动，默认 true"},
-            "logical": {"type": "boolean", "description": "x/y 是逻辑坐标时传 true（按主屏 scale 换算），默认 false"}
+            "logical": {"type": "boolean", "description": "x/y 是逻辑坐标时传 true（按主屏 scale 换算），默认 false"},
+            "coord_space": {"type": "string", "enum": ["screen", "image"], "description": "坐标空间：screen(默认)=屏幕物理像素；image=最近一次 screenshot 的图片像素（自动乘 scale 换算）"},
         },
         "required": ["x", "y"]
     }),
@@ -2121,7 +2352,8 @@ tool_impl!(
      - 中键：button=middle；\n\
      - 左键双击（选中单词/打开文件）：double=true（自动点 2 次，间隔会压到系统双击阈值内）；\n\
      - 连续多次点击：count=3（旧参数 clicks 仍兼容）。\n\
-     不给 x/y 时点击当前位置；给了坐标会先移动再点击。坐标默认物理像素，逻辑坐标传 logical=true。",
+     不给 x/y 时点击当前位置；给了坐标会先移动再点击。坐标默认物理像素，逻辑坐标传 logical=true。\
+     从截图估算的图片坐标传 coord_space=\"image\"（需先 screenshot，10 分钟内有效），会自动乘 scale。",
     json!({
         "type": "object",
         "properties": {
@@ -2132,7 +2364,8 @@ tool_impl!(
             "count": {"type": "integer", "description": "点击次数，默认 1；double=true 时至少 2"},
             "clicks": {"type": "integer", "description": "旧参数，等价 count（保留兼容）"},
             "interval_ms": {"type": "integer", "description": "多次点击间隔毫秒，默认 80"},
-            "logical": {"type": "boolean", "description": "x/y 是逻辑坐标时传 true，默认 false"}
+            "logical": {"type": "boolean", "description": "x/y 是逻辑坐标时传 true，默认 false"},
+            "coord_space": {"type": "string", "enum": ["screen", "image"], "description": "坐标空间：screen(默认)=屏幕物理像素；image=最近一次 screenshot 的图片像素（自动乘 scale 换算）"},
         }
     }),
     mouse_click
@@ -2145,7 +2378,8 @@ tool_impl!(
      需要连续点击多个位置时用这个：比多次调用 mouse_click 更稳定、少来回、每步可单独配按键/延迟。\n\
      points 每项：{x, y, button?: left/right/middle, double?: bool, delay_ms?, logical?}；\n\
      interval_ms 是默认步间延迟（默认 120ms，单点 delay_ms 优先）。返回实际执行点数与总耗时；\n\
-     某一步失败会立即中止并返回“第几步失败”（含坐标），不会继续乱点。",
+     某一步失败会立即中止并返回“第几步失败”（含坐标），不会继续乱点。\n\
+     coord_space=\"image\" 时所有点按最近一次 screenshot 的图片像素自动乘 scale 换算成屏幕物理像素。",
     json!({
         "type": "object",
         "properties": {
@@ -2167,7 +2401,8 @@ tool_impl!(
                     "required": ["x", "y"]
                 }
             },
-            "interval_ms": {"type": "integer", "description": "默认步间延迟毫秒，默认 120，最大 5000"}
+            "interval_ms": {"type": "integer", "description": "默认步间延迟毫秒，默认 120，最大 5000"},
+            "coord_space": {"type": "string", "enum": ["screen", "image"], "description": "坐标空间：screen(默认)=屏幕物理像素；image=最近一次 screenshot 的图片像素（自动乘 scale 换算）"}
         },
         "required": ["points"]
     }),
@@ -2214,7 +2449,7 @@ tool_impl!(
     MouseDrag,
     "mouse_drag",
     "按住鼠标从起点拖到终点（默认物理像素）。常用于拖动文件、选中文本、拖滚动条。\
-     逻辑坐标传 logical=true。\n\
+     逻辑坐标传 logical=true；从截图估算的图片坐标传 coord_space=\"image\"（自动乘 scale）。\n\
      如果拖拽过程需要中间停顿、或要分多步观察，改用 mouse_press → mouse_move（可多次）→ mouse_release 的手动模式。",
     json!({
         "type": "object",
@@ -2224,7 +2459,8 @@ tool_impl!(
             "to_x": {"type": "integer", "description": "终点横坐标"},
             "to_y": {"type": "integer", "description": "终点纵坐标"},
             "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "按键，默认 left"},
-            "logical": {"type": "boolean", "description": "坐标是逻辑像素时传 true，默认 false"}
+            "logical": {"type": "boolean", "description": "坐标是逻辑像素时传 true，默认 false"},
+            "coord_space": {"type": "string", "enum": ["screen", "image"], "description": "坐标空间：screen(默认)=屏幕物理像素；image=最近一次 screenshot 的图片像素（自动乘 scale 换算）"},
         },
         "required": ["from_x", "from_y", "to_x", "to_y"]
     }),
@@ -2237,14 +2473,16 @@ tool_impl!(
     "按下一个鼠标键并保持不松（可选先移动到 x/y）。\n\
      手动拖拽：mouse_press（按下）→ mouse_move（可多次移动，过程中一直按着）→ mouse_release（松开）；\n\
      需要\"按住等一会儿再松\"时，可以在 press 和 release 之间用 wait，或直接用 mouse_drag_path 的 hold_ms。\n\
-     重复 press 同一个键会返回提示（先 release）。进程退出时工具会自动兜底释放所有按住的键，不会卡住鼠标。",
+     重复 press 同一个键会返回提示（先 release）。进程退出时工具会自动兜底释放所有按住的键，不会卡住鼠标。\n\
+     x/y 可传图片坐标（coord_space=\"image\"，自动按最近一次 screenshot 的 scale 换算）。",
     json!({
         "type": "object",
         "properties": {
             "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "鼠标键：left(默认)/right/middle"},
             "x": {"type": "integer", "description": "可选，按下前先移动到的横坐标（物理像素）"},
             "y": {"type": "integer", "description": "可选，按下前先移动到的纵坐标（物理像素）"},
-            "logical": {"type": "boolean", "description": "x/y 是逻辑坐标时传 true，默认 false"}
+            "logical": {"type": "boolean", "description": "x/y 是逻辑坐标时传 true，默认 false"},
+            "coord_space": {"type": "string", "enum": ["screen", "image"], "description": "坐标空间：screen(默认)=屏幕物理像素；image=最近一次 screenshot 的图片像素（自动乘 scale 换算）"},
         }
     }),
     mouse_press
@@ -2255,6 +2493,7 @@ tool_impl!(
     "mouse_release",
     "松开鼠标键。不传 button 时会释放所有按住的鼠标键（安全兜底）。\n\
      可选先移动到 x/y 再松开（拖到目标位置后再松手）；逻辑坐标传 logical=true。\n\
+     x/y 也可传图片坐标（coord_space=\"image\"，自动按最近一次 screenshot 的 scale 换算）。\n\
      配合 mouse_press 完成\"按住 → 移动 → 松开\"的手动拖拽。",
     json!({
         "type": "object",
@@ -2262,7 +2501,8 @@ tool_impl!(
             "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "要松开的鼠标键；不传则松开全部按住的键"},
             "x": {"type": "integer", "description": "可选，松开前先移动到的横坐标（物理像素）"},
             "y": {"type": "integer", "description": "可选，松开前先移动到的纵坐标（物理像素）"},
-            "logical": {"type": "boolean", "description": "x/y 是逻辑坐标时传 true，默认 false"}
+            "logical": {"type": "boolean", "description": "x/y 是逻辑坐标时传 true，默认 false"},
+            "coord_space": {"type": "string", "enum": ["screen", "image"], "description": "坐标空间：screen(默认)=屏幕物理像素；image=最近一次 screenshot 的图片像素（自动乘 scale 换算）"},
         }
     }),
     mouse_release
@@ -2273,7 +2513,8 @@ tool_impl!(
     MouseDragPath,
     "mouse_drag_path",
     "沿一条折线路径拖拽鼠标（模拟人手，分步移动）。points 至少 2 个点，按顺序连接；\
-     duration_ms 控制总时长（默认 600ms）。适合拖过多个目标（如画图、拖选一大段文本、拖动滑块）。",
+     duration_ms 控制总时长（默认 600ms）。适合拖过多个目标（如画图、拖选一大段文本、拖动滑块）。\n\
+     从截图估算的图片坐标传 coord_space=\"image\"，points 会按最近一次 screenshot 的 scale 自动换算。",
     json!({
         "type": "object",
         "properties": {
@@ -2292,7 +2533,8 @@ tool_impl!(
             "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "按键，默认 left"},
             "duration_ms": {"type": "integer", "description": "整个拖拽的时长毫秒，默认 600，范围 50-20000"},
             "hold_ms": {"type": "integer", "description": "到达终点后保持按住多久再松开（毫秒，默认 0，最大 60000）"},
-            "logical": {"type": "boolean", "description": "坐标是逻辑像素时传 true，默认 false"}
+            "logical": {"type": "boolean", "description": "坐标是逻辑像素时传 true，默认 false"},
+            "coord_space": {"type": "string", "enum": ["screen", "image"], "description": "坐标空间：screen(默认)=屏幕物理像素；image=最近一次 screenshot 的图片像素（自动乘 scale 换算）"},
         },
         "required": ["points"]
     }),
@@ -3005,5 +3247,106 @@ mod tests {
         assert!(!bad_domain.ok);
         let bad_expr = mouse_graph(&ctx, json!({"expr": "sin(", "x_min": 0, "x_max": 1, "dry_run": true})).await;
         assert!(!bad_expr.ok);
+    }
+
+    // ============================================================
+    // 自适应坐标：coord_space="image" 的换算与错误路径
+    // ============================================================
+
+    /// 串行化会读写全局截图契约的测试（与 screen 测试共用同一把锁）。
+
+    #[test]
+    fn coord_space_conversion() {
+        let _serial = crate::screen::CONTRACT_TEST_LOCK.lock();
+        crate::screen::clear_screenshot_contract_for_test();
+        // screen（默认）：原样返回，无回显
+        let (points, note) = convert_coords(CoordSpace::Screen, false, &[(600, 400)]).unwrap();
+        assert_eq!(points, vec![(600, 400)]);
+        assert!(note.is_none());
+        // image 但没有截图契约 → 清晰中文错误
+        let error = convert_coords(CoordSpace::Image, false, &[(600, 400)])
+            .expect_err("未截图时应报错");
+        assert!(error.contains("还没有可用的截图坐标契约"), "{error}");
+        assert!(error.contains("请先调用 screenshot"), "{error}");
+        // 写入 3840x2160 → 1536x864（scale 2.5）的契约
+        crate::screen::set_screenshot_contract_for_test(1536, 864, 3840, 2160, 0, 0);
+        let (points, note) = convert_coords(CoordSpace::Image, false, &[(600, 400)]).unwrap();
+        assert_eq!(points, vec![(1500, 1000)]);
+        let note = note.expect("image 模式应有回显");
+        assert!(note.contains("图片(600,400) → 屏幕(1500,1000)"), "{note}");
+        // 边界：左上 (0,0)、右下（取整）
+        let (points, _) =
+            convert_coords(CoordSpace::Image, false, &[(0, 0), (1535, 863)]).unwrap();
+        assert_eq!(points, vec![(0, 0), (3838, 2158)]);
+        // image + logical 冲突
+        let error = convert_coords(CoordSpace::Image, true, &[(1, 1)]).expect_err("不能同时用");
+        assert!(error.contains("不能同时使用"), "{error}");
+        // 非等比缩放按 x/y 分别算
+        crate::screen::set_screenshot_contract_for_test(1600, 1000, 3840, 2160, 0, 0);
+        let (points, _) = convert_coords(CoordSpace::Image, false, &[(500, 500)]).unwrap();
+        assert_eq!(points, vec![(1200, 1080)]);
+        crate::screen::clear_screenshot_contract_for_test();
+    }
+
+    #[test]
+    fn coord_space_arg_parsing() {
+        assert_eq!(parse_coord_space(&json!({})).unwrap(), CoordSpace::Screen);
+        assert_eq!(
+            parse_coord_space(&json!({"coord_space": "screen"})).unwrap(),
+            CoordSpace::Screen
+        );
+        assert_eq!(
+            parse_coord_space(&json!({"coord_space": "IMAGE"})).unwrap(),
+            CoordSpace::Image
+        );
+        assert!(parse_coord_space(&json!({"coord_space": "bogus"})).is_err());
+    }
+
+    #[tokio::test]
+    async fn coord_space_image_errors_without_screenshot() {
+        let _serial = crate::screen::CONTRACT_TEST_LOCK.lock();
+        crate::screen::clear_screenshot_contract_for_test();
+        let root = crate::test_support::temp_root("coord-space");
+        let (ctx, _host) = crate::test_support::fake_ctx(&root);
+        // 未截图：mouse_move(coord_space=image) 应在移动鼠标前报错
+        let out = mouse_move(
+            &ctx,
+            json!({"x": 600, "y": 400, "coord_space": "image"}),
+        )
+        .await;
+        assert!(!out.ok, "{}", out.content);
+        assert!(
+            out.content.contains("请先调用 screenshot"),
+            "{}",
+            out.content
+        );
+        // 非法 coord_space
+        let out = mouse_move(&ctx, json!({"x": 1, "y": 2, "coord_space": "bogus"})).await;
+        assert!(!out.ok);
+        assert!(out.content.contains("coord_space 只能是"), "{}", out.content);
+        // image + logical 冲突（不会触碰鼠标）
+        let out = mouse_move(
+            &ctx,
+            json!({"x": 1, "y": 2, "coord_space": "image", "logical": true}),
+        )
+        .await;
+        assert!(!out.ok);
+        assert!(out.content.contains("不能同时使用"), "{}", out.content);
+        // mouse_click 只给一个坐标时 image 模式需要 x/y
+        let out = mouse_click(&ctx, json!({"coord_space": "image"})).await;
+        assert!(!out.ok);
+        assert!(out.content.contains("需要同时提供 x 和 y"), "{}", out.content);
+        // mouse_click_sequence：无契约时报错（在点击前）
+        let out = mouse_click_sequence(
+            &ctx,
+            json!({"points": [{"x": 10, "y": 20}], "coord_space": "image"}),
+        )
+        .await;
+        assert!(!out.ok, "{}", out.content);
+        assert!(
+            out.content.contains("请先调用 screenshot"),
+            "{}",
+            out.content
+        );
     }
 }

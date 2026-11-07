@@ -19,6 +19,7 @@ pub mod screen;
 pub mod shell;
 pub mod snapshot;
 pub mod system;
+pub mod tab;
 pub mod uia;
 pub mod web;
 
@@ -125,6 +126,10 @@ pub fn register_all(reg: &ToolRegistry, settings: &Settings) {
     if settings.tools.uia_enabled {
         uia::register(reg);
     }
+    // Tab 键遍历：扫描（UIA 只读）+ 交互（输入模拟），两者都开才对模型可见。
+    if settings.tools.allow_input_simulation && settings.tools.uia_enabled {
+        tab::register(reg);
+    }
     if settings.tools.cdp_enabled {
         cdp::register(reg);
     }
@@ -144,6 +149,7 @@ pub fn tool_catalog() -> Vec<ToolSpec> {
     register_system(&reg);
     register_web(&reg);
     uia::register(&reg);
+    tab::register(&reg);
     cdp::register(&reg);
     index::register(&reg);
     snapshot::register(&reg);

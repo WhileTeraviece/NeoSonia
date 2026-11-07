@@ -1,4 +1,4 @@
-﻿//! 屏幕工具：枚举显示器、截图（xcap）、主屏尺寸、屏幕度量。
+//! 屏幕工具：枚举显示器、截图（xcap）、主屏尺寸、屏幕度量。
 //!
 //! 坐标约定：对外一律使用**物理像素**。`screenshot` 返回 `scale`，
 //! 逻辑坐标 = 物理坐标 / scale；`mouse_*` 支持 `logical: true` 时内部换算。
@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use neosonia_core::model::{ToolCtx, ToolOutcome};
@@ -580,6 +580,8 @@ struct ScreenshotResult {
     physical_width: u32,
     physical_height: u32,
     grid: bool,
+    /// 本次截图的"图片像素 → 屏幕物理像素"契约（自适应坐标信息）。
+    contract: ScreenshotCoordContract,
     /// 抓屏方式（"GDI" 快速路径 / "xcap" 兜底）。
     capture_method: &'static str,
     /// 抓屏 / 预处理 / PNG 编码 / 总耗时（毫秒）。
@@ -589,6 +591,205 @@ struct ScreenshotResult {
     total_ms: u64,
     file_bytes: u64,
     png: Option<Vec<u8>>,
+}
+
+// ============================================================
+// 截图坐标契约（图片像素 ⇄ 屏幕物理像素）
+// ------------------------------------------------------------
+// 截图可能被 max_edge 缩小（3840x2160 → 1536x864），视觉模型从图片估算的坐标
+// 必须乘以 scale 才是鼠标工具用的屏幕物理坐标。这里记录最近一次截图的映射关系，
+// 供 `screenshot` 输出自适应坐标信息，也供鼠标工具 coord_space="image" 自动换算。
+// ============================================================
+
+/// 最近一次截图里「图片像素」到「屏幕物理像素」的换算关系。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScreenshotCoordContract {
+    pub image_width: u32,
+    pub image_height: u32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+    /// 图片左上角对应的屏幕物理坐标（整屏截图通常是显示器原点；带 region 时是 region 起点）。
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub scale_x: f64,
+    pub scale_y: f64,
+    pub captured_at: Instant,
+}
+
+impl ScreenshotCoordContract {
+    fn from_capture(
+        image_width: u32,
+        image_height: u32,
+        physical_width: u32,
+        physical_height: u32,
+        origin_x: i32,
+        origin_y: i32,
+    ) -> Self {
+        Self {
+            image_width,
+            image_height,
+            physical_width,
+            physical_height,
+            origin_x,
+            origin_y,
+            scale_x: physical_width as f64 / image_width.max(1) as f64,
+            scale_y: physical_height as f64 / image_height.max(1) as f64,
+            captured_at: Instant::now(),
+        }
+    }
+
+    /// 图片像素 → 屏幕物理像素（四舍五入到整数）。
+    pub(crate) fn image_to_screen(&self, x: i64, y: i64) -> (i32, i32) {
+        let convert = |value: f64| -> i32 {
+            if !value.is_finite() {
+                return 0;
+            }
+            value
+                .round()
+                .clamp(i32::MIN as f64, i32::MAX as f64) as i32
+        };
+        (
+            convert(self.origin_x as f64 + x as f64 * self.scale_x),
+            convert(self.origin_y as f64 + y as f64 * self.scale_y),
+        )
+    }
+
+    fn scale_is_uniform(&self) -> bool {
+        (self.scale_x - self.scale_y).abs() < 1e-9
+    }
+
+    fn scale_text(&self) -> String {
+        if self.scale_is_uniform() {
+            format!("{:.3}", self.scale_x)
+        } else {
+            format!("x={:.3}, y={:.3}", self.scale_x, self.scale_y)
+        }
+    }
+}
+
+/// 截图坐标契约有效期：10 分钟（过期后 coord_space="image" 会要求重新截图）。
+pub(crate) const SCREENSHOT_CONTRACT_TTL: Duration = Duration::from_secs(600);
+
+static LAST_SCREENSHOT_CONTRACT: Lazy<Mutex<Option<ScreenshotCoordContract>>> =
+    Lazy::new(|| Mutex::new(None));
+
+fn record_screenshot_contract(contract: ScreenshotCoordContract) {
+    *LAST_SCREENSHOT_CONTRACT.lock() = Some(contract);
+}
+
+/// 最近一次截图的坐标契约（超过 TTL 视为没有；未截图也返回 None）。
+pub(crate) fn last_screenshot_contract() -> Option<ScreenshotCoordContract> {
+    LAST_SCREENSHOT_CONTRACT
+        .lock()
+        .as_ref()
+        .filter(|contract| contract.captured_at.elapsed() <= SCREENSHOT_CONTRACT_TTL)
+        .copied()
+}
+
+/// 测试用：串行化会读写全局截图契约的测试（screen 和 input 的测试共用这把锁）。
+#[cfg(test)]
+pub(crate) static CONTRACT_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 测试用：清空坐标契约（模拟"还没截图"）。
+#[cfg(test)]
+pub(crate) fn clear_screenshot_contract_for_test() {
+    *LAST_SCREENSHOT_CONTRACT.lock() = None;
+}
+
+/// 测试用：写入一个指定尺寸的坐标契约（不真的截图）。
+#[cfg(test)]
+pub(crate) fn set_screenshot_contract_for_test(
+    image_width: u32,
+    image_height: u32,
+    physical_width: u32,
+    physical_height: u32,
+    origin_x: i32,
+    origin_y: i32,
+) -> ScreenshotCoordContract {
+    let contract = ScreenshotCoordContract::from_capture(
+        image_width,
+        image_height,
+        physical_width,
+        physical_height,
+        origin_x,
+        origin_y,
+    );
+    record_screenshot_contract(contract);
+    contract
+}
+
+/// 网格图例文案（图片角落 + 工具输出里都会出现；N 保留 2 位）。
+fn grid_legend_text(scale_x: f64, scale_y: f64) -> String {
+    if (scale_x - scale_y).abs() < 1e-9 {
+        format!("网格=屏幕物理px；图片px × {scale_x:.2} = 屏幕px")
+    } else {
+        format!("网格=屏幕物理px；图片px × (x{scale_x:.2}, y{scale_y:.2}) = 屏幕px")
+    }
+}
+
+/// 把自适应坐标契约渲染成给模型看的说明（截图工具输出用）。
+fn render_coord_contract(contract: &ScreenshotCoordContract) -> String {
+    let center_image = (
+        contract.image_width as i64 / 2,
+        contract.image_height as i64 / 2,
+    );
+    let bottom_image = (
+        contract.image_width.saturating_sub(1) as i64,
+        contract.image_height.saturating_sub(1) as i64,
+    );
+    let (cx, cy) = contract.image_to_screen(center_image.0, center_image.1);
+    let (bx, by) = contract.image_to_screen(bottom_image.0, bottom_image.1);
+    let legend = grid_legend_text(contract.scale_x, contract.scale_y);
+    let mut out = String::from("坐标契约（自适应）：\n");
+    out.push_str(&format!(
+        "图像尺寸：{}x{}（图片像素，实际返回的图片）\n",
+        contract.image_width, contract.image_height
+    ));
+    out.push_str(&format!(
+        "屏幕尺寸：{}x{}（物理像素，截图覆盖的屏幕区域）\n",
+        contract.physical_width, contract.physical_height
+    ));
+    out.push_str(&format!(
+        "比例 scale：{}（屏幕物理 / 图片像素）\n",
+        contract.scale_text()
+    ));
+    out.push_str(&format!(
+        "图像原点（屏幕物理）：({}, {})\n",
+        contract.origin_x, contract.origin_y
+    ));
+    out.push_str("坐标空间：图片像素；屏幕物理 = 图像原点 + 图片坐标 × scale\n");
+    if contract.image_width == contract.physical_width
+        && contract.image_height == contract.physical_height
+        && contract.origin_x == 0
+        && contract.origin_y == 0
+    {
+        out.push_str("图像未缩放：图片坐标 = 屏幕物理坐标（scale=1），可直接用图片坐标。\n");
+    } else if contract.scale_is_uniform() {
+        out.push_str(&format!(
+            "换算：屏幕物理 = 图片坐标 × {}（整屏截图的图像原点通常为 (0,0)）\n",
+            contract.scale_text()
+        ));
+    } else {
+        out.push_str(&format!(
+            "换算：屏幕物理 = 图像原点 + (图片x × {}, 图片y × {})\n",
+            contract.scale_x, contract.scale_y
+        ));
+    }
+    out.push_str(&format!(
+        "锚点示例：左上 图片(0,0)→屏幕({}, {})；中心 图片({}, {})→屏幕({cx}, {cy})；\
+         右下 图片({}, {})→屏幕({bx}, {by})\n",
+        contract.origin_x,
+        contract.origin_y,
+        center_image.0,
+        center_image.1,
+        bottom_image.0,
+        bottom_image.1
+    ));
+    out.push_str(&format!("网格图例：{legend}\n"));
+    out.push_str(
+        "推荐：精确点选直接用网格刻度（物理像素）；若坐标来自图片像素，鼠标工具传 coord_space=\"image\" 会自动乘 scale。\n",
+    );
+    out
 }
 
 // ============================================================
@@ -792,6 +993,129 @@ fn write_png_fast(img: &image::RgbaImage, path: &std::path::Path) -> Result<(), 
         .map_err(|e| format!("写 PNG 失败：{e}"))
 }
 
+/// 在图片角落用 GDI 画一行图例（中文字体，带黑描边保证明暗背景都可读）。
+///
+/// 实现：把图片像素直接拷进 32bpp top-down DIB，用 GDI 画字后拷回；
+/// DIB 被 GDI 按 BGRA 解释，读回时交换通道即可还原 RGBA。
+#[cfg(windows)]
+fn draw_grid_legend(img: &mut image::RgbaImage, text: &str) {
+    use windows::Win32::Foundation::{COLORREF, HANDLE, SIZE};
+    use windows::Win32::Graphics::Gdi::{
+        BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, CreateFontW,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetTextExtentPoint32W, HGDIOBJ, ReleaseDC,
+        SelectObject, SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
+    };
+
+    let (width, height) = (img.width(), img.height());
+    if width < 40 || height < 40 || text.is_empty() {
+        return;
+    }
+    let byte_len = width as usize * height as usize * 4;
+    // SAFETY: 全流程使用标准 GDI 调用；DIB 尺寸与图片一致，读写范围严格限制在 byte_len。
+    unsafe {
+        let screen_dc = GetDC(None);
+        if screen_dc.is_invalid() {
+            return;
+        }
+        let mem_dc = CreateCompatibleDC(screen_dc);
+        if mem_dc.is_invalid() {
+            let _ = ReleaseDC(None, screen_dc);
+            return;
+        }
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0, // BI_RGB
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let bitmap = match CreateDIBSection(
+            mem_dc,
+            &info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            HANDLE(std::ptr::null_mut()),
+            0,
+        ) {
+            Ok(bitmap) => bitmap,
+            Err(_) => {
+                let _ = DeleteDC(mem_dc);
+                let _ = ReleaseDC(None, screen_dc);
+                return;
+            }
+        };
+        if bits.is_null() {
+            let _ = DeleteObject(HGDIOBJ(bitmap.0));
+            let _ = DeleteDC(mem_dc);
+            let _ = ReleaseDC(None, screen_dc);
+            return;
+        }
+        std::ptr::copy_nonoverlapping(img.as_raw().as_ptr(), bits.cast::<u8>(), byte_len);
+        let old_bitmap = SelectObject(mem_dc, HGDIOBJ(bitmap.0));
+        let font_height = (height / 48).clamp(14, 26) as i32;
+        let face: Vec<u16> = "Microsoft YaHei\0".encode_utf16().collect();
+        let font = CreateFontW(
+            -font_height,
+            0,
+            0,
+            0,
+            700, // FW_BOLD
+            0,
+            0,
+            0,
+            1, // DEFAULT_CHARSET
+            0,
+            0,
+            4, // ANTIALIASED_QUALITY
+            0,
+            windows::core::PCWSTR(face.as_ptr()),
+        );
+        let old_font = if font.is_invalid() {
+            HGDIOBJ(std::ptr::null_mut())
+        } else {
+            SelectObject(mem_dc, HGDIOBJ(font.0))
+        };
+        SetBkMode(mem_dc, TRANSPARENT);
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut text_size = SIZE::default();
+        let _ = GetTextExtentPoint32W(mem_dc, &wide, &mut text_size);
+        let text_width = text_size.cx.max(10);
+        let x = (width as i32 - text_width - 20).max(8);
+        let y = (height as i32 - font_height - 12).max(4);
+        // 先画黑色阴影/描边，再画白字
+        SetTextColor(mem_dc, COLORREF(0x0000_0000));
+        let _ = TextOutW(mem_dc, x + 2, y + 2, &wide);
+        SetTextColor(mem_dc, COLORREF(0x00FF_FFFF));
+        let _ = TextOutW(mem_dc, x, y, &wide);
+        // 读回 DIB（BGRA）→ 图片（RGBA），alpha 统一 255
+        let source = std::slice::from_raw_parts(bits.cast::<u8>(), byte_len);
+        let target: &mut [u8] = img.as_mut();
+        for (src, dst) in source.chunks_exact(4).zip(target.chunks_exact_mut(4)) {
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            dst[3] = 255;
+        }
+        if !font.is_invalid() {
+            let _ = SelectObject(mem_dc, old_font);
+            let _ = DeleteObject(HGDIOBJ(font.0));
+        }
+        let _ = SelectObject(mem_dc, old_bitmap);
+        let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        let _ = DeleteDC(mem_dc);
+        let _ = ReleaseDC(None, screen_dc);
+    }
+}
+
+#[cfg(not(windows))]
+fn draw_grid_legend(_img: &mut image::RgbaImage, _text: &str) {}
+
 fn capture_blocking(
     selector: DisplaySelector,
     region: Option<Region>,
@@ -932,7 +1256,23 @@ fn capture_blocking(
     // 网格画在最终分辨率上（保证缩放后刻度文字仍清晰），坐标按物理像素换算。
     if grid {
         draw_grid(&mut img, crop_origin_x, crop_origin_y, physical_width, physical_height);
+        // 图片角落画一行图例：网格标签是屏幕物理像素，图片像素要乘 scale 才是屏幕像素。
+        let legend = grid_legend_text(
+            physical_width as f64 / w.max(1) as f64,
+            physical_height as f64 / h.max(1) as f64,
+        );
+        draw_grid_legend(&mut img, &legend);
     }
+    // 记录坐标契约：供 screenshot 输出自适应坐标信息，也给鼠标工具 coord_space="image" 换算。
+    let contract = ScreenshotCoordContract::from_capture(
+        w,
+        h,
+        physical_width,
+        physical_height,
+        crop_origin_x,
+        crop_origin_y,
+    );
+    record_screenshot_contract(contract);
     let prepare_ms = prepare_started.elapsed().as_millis() as u64;
 
     if let Some(parent) = save_target.parent() {
@@ -962,6 +1302,7 @@ fn capture_blocking(
         physical_width,
         physical_height,
         grid,
+        contract,
         capture_method,
         capture_ms,
         prepare_ms,
@@ -1096,20 +1437,15 @@ async fn screenshot(ctx: &ToolCtx, args: Value) -> ToolOutcome {
         result.total_ms
     ));
     if result.grid {
-        let factor = if result.physical_width > 0 {
-            result.width as f32 / result.physical_width as f32
-        } else {
-            1.0
-        };
         out.push_str(&format!(
-            "网格：间距 100px（细线）/ 500px（粗线），刻度为物理像素坐标，坐标原点为屏幕左上角（虚拟桌面）；\
-             图像覆盖物理范围 {}x{}，图可能被缩放，图上坐标 = 物理坐标 × {factor:.3}，显示器 scale={}。\n",
-            result.physical_width,
-            result.physical_height,
-            fmt_scale(result.monitor.scale)
+            "网格：间距 100px（细线）/ 500px（粗线），刻度为屏幕物理像素（虚拟桌面坐标）；\
+             图像覆盖物理范围 {}x{}。\n",
+            result.physical_width, result.physical_height
         ));
     }
-    out.push_str("提示：鼠标/键盘工具使用物理像素坐标。\n");
+    // 自适应坐标契约：图片可能被缩小，模型按 scale 换算或用 coord_space="image" 交给鼠标工具。
+    out.push_str(&render_coord_contract(&result.contract));
+    out.push_str("提示：鼠标/键盘工具默认用屏幕物理像素；从图片估算的坐标建议传 coord_space=\"image\"。\n");
     if let Some(png) = result.png {
         let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
         out.push_str(&format!(
@@ -1614,11 +1950,14 @@ tool_impl!(
     Screenshot,
     "screenshot",
     "截取屏幕并保存为 PNG 文件，返回绝对路径、宽高和缩放比例（默认只回路径，不回二进制，省 token）。\n\
-     可以截主屏/指定显示器/指定区域，并把最长边缩到 max_edge（默认取界面设置）。\n\
+     可以截主屏/指定显示器/指定区域，并把最长边缩到 max_edge（默认取界面设置；传 0 表示不缩放、返回原始分辨率）。\n\
      默认走 Windows GDI 快速抓屏（BitBlt + GetDIBits，目标 <300ms）；fast=false 或 GDI 不可用时回退 xcap。\n\
-     grid=true 时在图上叠加坐标网格：每 100 物理像素细线、每 500 像素粗线，上边/左边有刻度数字，\
-     画面上还会标出图像左上角的物理坐标；结合刻度可以直接算出 mouse_click 的物理像素坐标。\n\
+     **图片可能被缩小**（例如 3840x2160 缩成 1536x864）：返回文本的“坐标契约”给出 image_size / screen_size / \
+     scale（屏幕物理 = 图像原点 + 图片坐标 × scale）以及左上/中心/右下锚点示例。\n\
+     grid=true 时在图上叠加坐标网格：每 100 物理像素细线、每 500 像素粗线，上边/左边有刻度数字；\
+     网格标签是**屏幕物理像素**（最稳妥，直接按网格读数点选）；图片角落还有一行图例说明换算比例。\n\
      返回文本始终包含 [screenshot:<绝对路径>] 标记（视觉输入依赖它），并给出抓屏/编码/总耗时。\n\
+     从图片像素估的坐标，后续鼠标工具传 coord_space=\"image\" 会自动乘 scale；把已知物理坐标（网格/UIA rect）用默认 screen。\n\
      需要把图像内容发给模型时用 return_base64=true（很占 token，慎用）。",
     json!({
         "type": "object",
@@ -1636,8 +1975,8 @@ tool_impl!(
                 "required": ["x", "y", "w", "h"]
             },
             "save_path": {"type": "string", "description": "PNG 保存路径；默认存到项目 data/screenshots/"},
-            "max_edge": {"type": "integer", "description": "最长边像素上限，0 表示不缩放；默认取设置"},
-            "grid": {"type": "boolean", "description": "是否叠加坐标网格（100px/500px 刻度，物理像素坐标），默认 false；想精确点坐标时用"},
+            "max_edge": {"type": "integer", "description": "最长边像素上限；默认取设置，传 0 表示不缩放（返回原始分辨率）"},
+            "grid": {"type": "boolean", "description": "是否叠加坐标网格（100px/500px 刻度=屏幕物理像素）；默认 false，想精确点坐标时用"},
             "fast": {"type": "boolean", "description": "是否使用 GDI 快速抓屏（默认 true；false 强制 xcap 兜底路径）"},
             "return_base64": {"type": "boolean", "description": "是否在结果里附带 PNG 的 base64，默认 false"}
         }
@@ -1973,6 +2312,49 @@ mod tests {
         assert!(std::path::Path::new(&grid_path).is_file());
         println!("GRID_SCREENSHOT_PATH={grid_path}");
         println!("=== grid screenshot result ===\n{}", grid_out.content);
+        // 自适应坐标契约：图片可能被缩小，必须给出 scale/锚点/图例
+        for needle in [
+            "坐标契约（自适应）",
+            "图像尺寸：",
+            "屏幕尺寸：",
+            "比例 scale：",
+            "锚点示例：",
+            "网格图例：网格=屏幕物理px",
+            "图片px ×",
+            "coord_space=\"image\"",
+        ] {
+            assert!(
+                grid_out.content.contains(needle),
+                "grid 截图输出应包含 {needle:?}: {}",
+                grid_out.content
+            );
+        }
+        // 契约登记：最近一次截图应能读到（供 coord_space="image" 换算）
+        let contract = last_screenshot_contract().expect("截图后应有坐标契约");
+        assert!(contract.image_width > 0 && contract.physical_width > 0);
+
+        // max_edge=0：不缩放，图片尺寸 == 屏幕物理尺寸（scale=1）
+        let raw_out = screenshot(
+            &ctx,
+            json!({"display": "primary", "max_edge": 0, "return_base64": false}),
+        )
+        .await;
+        assert!(raw_out.ok, "{}", raw_out.content);
+        println!("=== max_edge=0 screenshot result ===\n{}", raw_out.content);
+        assert!(
+            raw_out.content.contains("图像未缩放：图片坐标 = 屏幕物理坐标"),
+            "max_edge=0 应说明未缩放: {}",
+            raw_out.content
+        );
+        assert!(
+            raw_out.content.contains("比例 scale：1.000"),
+            "max_edge=0 的 scale 应为 1: {}",
+            raw_out.content
+        );
+        let contract = last_screenshot_contract().expect("截图后应有坐标契约");
+        assert_eq!(contract.image_width, contract.physical_width);
+        assert_eq!(contract.image_height, contract.physical_height);
+        assert_eq!(contract.image_to_screen(600, 400), (600, 400));
 
         // app 截图快捷键用的公共函数（不经 Tool trait）
         let out_dir = root.join("data").join("screenshots");
@@ -2052,5 +2434,81 @@ mod tests {
         let bad = screen_mark(&ctx, json!({"points": [{"x": 1, "y": 2}], "duration_ms": 999999, "dry_run": true})).await;
         assert!(bad.ok, "{}", bad.content);
         assert!(bad.content.contains("时长：10000ms"), "duration 应 clamp 到 10000ms: {}", bad.content);
+    }
+
+    #[test]
+    fn coord_contract_scale_and_anchors() {
+        // 1) 3840x2160 缩成 1536x864 → scale 2.5
+        let contract =
+            ScreenshotCoordContract::from_capture(1536, 864, 3840, 2160, 0, 0);
+        assert!((contract.scale_x - 2.5).abs() < 1e-9);
+        assert!((contract.scale_y - 2.5).abs() < 1e-9);
+        assert!(contract.scale_is_uniform());
+        // 图片坐标 → 屏幕物理坐标（取整）
+        assert_eq!(contract.image_to_screen(0, 0), (0, 0));
+        assert_eq!(contract.image_to_screen(600, 400), (1500, 1000));
+        assert_eq!(contract.image_to_screen(1535, 863), (3838, 2158));
+        // 报告文案包含 scale / 锚点 / 图例
+        let report = render_coord_contract(&contract);
+        println!("{report}");
+        assert!(report.contains("坐标契约"), "{report}");
+        assert!(report.contains("图像尺寸：1536x864"), "{report}");
+        assert!(report.contains("屏幕尺寸：3840x2160"), "{report}");
+        assert!(report.contains("比例 scale：2.500"), "{report}");
+        assert!(report.contains("锚点示例"), "{report}");
+        assert!(report.contains("左上 图片(0,0)→屏幕(0, 0)"), "{report}");
+        assert!(report.contains("中心 图片(768, 432)→屏幕(1920, 1080)"), "{report}");
+        assert!(report.contains("右下 图片(1535, 863)→屏幕(3838, 2158)"), "{report}");
+        assert!(report.contains("网格图例：网格=屏幕物理px"), "{report}");
+        assert!(report.contains("图片px × 2.50 = 屏幕px"), "{report}");
+
+        // 2) 非等比缩放：x/y 分别算
+        let contract = ScreenshotCoordContract::from_capture(1600, 1000, 3840, 2160, 0, 0);
+        assert!((contract.scale_x - 2.4).abs() < 1e-9);
+        assert!((contract.scale_y - 2.16).abs() < 1e-9);
+        assert!(!contract.scale_is_uniform());
+        assert_eq!(contract.image_to_screen(500, 500), (1200, 1080));
+        let report = render_coord_contract(&contract);
+        assert!(report.contains("比例 scale：x=2.400, y=2.160"), "{report}");
+
+        // 3) 未缩放：图片 == 屏幕 → scale=1，文案说明可直接用图片坐标
+        let contract =
+            ScreenshotCoordContract::from_capture(3840, 2160, 3840, 2160, 0, 0);
+        assert!((contract.scale_x - 1.0).abs() < 1e-9);
+        let report = render_coord_contract(&contract);
+        assert!(report.contains("比例 scale：1.000"), "{report}");
+        assert!(report.contains("图像未缩放：图片坐标 = 屏幕物理坐标"), "{report}");
+        assert!(report.contains("网格=屏幕物理px"), "{report}");
+
+        // 4) 带 region/多屏原点：图片(0,0) → 屏幕(origin_x, origin_y)
+        let contract = ScreenshotCoordContract::from_capture(960, 540, 1920, 1080, 1920, 0);
+        assert_eq!(contract.image_to_screen(0, 0), (1920, 0));
+        assert_eq!(contract.image_to_screen(480, 270), (2880, 540));
+        let report = render_coord_contract(&contract);
+        assert!(report.contains("图像原点（屏幕物理）：(1920, 0)"), "{report}");
+    }
+
+    #[test]
+    fn screenshot_contract_registry_and_ttl() {
+        let _serial = CONTRACT_TEST_LOCK.lock();
+        clear_screenshot_contract_for_test();
+        assert!(last_screenshot_contract().is_none(), "未截图时不应有契约");
+        let contract = set_screenshot_contract_for_test(1536, 864, 3840, 2160, 0, 0);
+        let stored = last_screenshot_contract().expect("设置后应能读到契约");
+        assert_eq!(stored.image_width, 1536);
+        assert_eq!(stored.physical_width, 3840);
+        assert_eq!(contract.image_to_screen(600, 400), (1500, 1000));
+        clear_screenshot_contract_for_test();
+        assert!(last_screenshot_contract().is_none(), "清空后应读不到契约");
+    }
+
+    #[test]
+    fn no_scale_contract_math() {
+        // max_edge=0（不缩放）时图片尺寸 == 屏幕物理尺寸 → scale=1
+        let contract = ScreenshotCoordContract::from_capture(3840, 2160, 3840, 2160, 0, 0);
+        assert_eq!(contract.scale_x, 1.0);
+        assert_eq!(contract.scale_y, 1.0);
+        assert_eq!(contract.image_to_screen(600, 400), (600, 400));
+        assert_eq!(contract.image_to_screen(3839, 2159), (3839, 2159));
     }
 }

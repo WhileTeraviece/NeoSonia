@@ -749,3 +749,19 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
 - **日常内容先切回 daily 模式**：system prompt 的「模式切换（硬性要求）」新增：天气/日程/生活常识/闲聊/新闻等日常内容必须先 `switch_mode {"mode":"daily"}` 再回答；coding/computer_use 段落再强调。单测 `non_daily_modes_require_switching_back_for_daily_content`。
 - **关闭按钮转后台**：fenestra-core `App::on_close_requested()` 默认 true；shell 主窗口 CloseRequested 走该回调；NeoSoniaApp 返回 false 并 `hide_window()`。真机验证：点关闭后窗口 `IsWindowVisible=false`、进程存活，Alt+Space 可重新显示。
 - **网页端多 token 存储**：SPA `localStorage['neosonia.tokens']` 列表（去重、最多 8、旧键自动迁移）；逐个验证，401 只移除失败项；全部失效保留列表；配对/断开只影响当前项。截图 `logs/screenshot-web-multitoken-app.png` / `_pair.png`；Node spa-core 22 passed，web 100 passed（注意 `devices::tests::name_and_ua_are_sanitized` 偶发因临时目录/安全软件占用报 os error 5，重跑通过）。
+
+## v1.0.1 待验收：Tab 遍历 + 自适应坐标
+
+### Tab 键遍历（computer use）
+- 新增 `tab_scan {window?, max?}`：用 UIA 枚举屏幕内**可 Tab 聚焦**对象（IsKeyboardFocusable + enabled + 可见），按屏幕位置排序，index 1 基；输出 index/name/control_type/automation_id/class_name/accelerator_key/rect/window_title/process_id/focused/enabled；UIA 拿不到时 Win32 WS_TABSTOP 兜底。
+- 只保留屏幕内对象：rect 宽高 > 0 且中心点落在虚拟桌面范围；过滤屏幕外/隐藏窗口（修复了此前把 y=-941 的离屏控件列进来的问题）与 Win32 空容器；摘要输出过滤计数。
+- `tab_act {index, action}`：focus / click / enter / space / tab / shift_tab；只认最近 30 秒 tab_scan 的 index；目标中心不在屏幕内直接报「目标不在当前屏幕内…请重新 tab_scan」，不退化点击。
+- 注册条件：`allow_input_simulation && uia_enabled`。
+- 真机 agent 联调（截图 `logs/ui/v102-tab-agent.png`）：tab_scan 前 5 项均无负坐标；选中 Firefox 窗口 index=18 → tab_act focus 成功（UIA SetFocus 不可用则点中心 (1030,340)），焦点从 NeoSonia 窗口转到 Firefox 地址栏，未触发任何按钮/提交。
+
+### 截图自适应坐标（screenshot / mouse_*）
+- `screenshot` 输出「坐标契约」：图像尺寸、屏幕物理尺寸、scale、图像原点、坐标空间、左上/中心/右下锚点示例；`grid:true` 时图片右下角画图例「网格=屏幕物理px；图片px × N = 屏幕px」。
+- `max_edge` 覆盖参数：传 0 = 不缩放返回原始分辨率（scale=1）。
+- 鼠标工具（mouse_move/click/drag/drag_path/click_sequence/press/release）新增 `coord_space:"screen"|"image"`：传 image 时自动按最近一次截图契约换算（10 分钟内有效；未截图/过期有中文错误；与 logical=true 冲突报错），输出回显「图片(600,400) → 屏幕(1500,1000)」。
+- 实测截图 `sandbox/data/screenshots/shot-20261107-122037-b070f071.png`：1600×900 图、scale 2.4，右下角图例可读；agent 实测 coord_space="image" 换算与光标位置一致。
+- 工具目录 75 个；tools 测试 166 passed / 23 ignored。

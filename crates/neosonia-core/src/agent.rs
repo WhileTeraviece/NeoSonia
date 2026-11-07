@@ -1181,6 +1181,7 @@ const COMPUTER_OPERATIONS_BASIC_SECTION: &str = "\n## 计算机操作（基础�
      - 截图：直接用内置 screenshot（截整个屏幕）或 ui_screenshot（截指定窗口），画面会自动作为图片发给模型看。\n\
      - **不要用 python/PIL 截图**：内置截图工具会让模型直接看到画面，走 python 反而看不到结果。\n\
      - 键鼠：mouse_click / mouse_scroll / keyboard_type / keyboard_combo；坐标是屏幕物理像素。\n\
+     - 按 Tab 顺序遍历控件：先 tab_scan 列出屏幕内可 Tab 聚焦对象（index/name/control_type/rect），再 tab_act {index, action:\"focus|click|enter|space|tab|shift_tab\"} 选中并交互。\n\
      - 界面优先用 UIA：ui_act / ui_click / ui_drag 按控件名操作；ui_tree / ui_window_list / foreground_window 看界面；wait_for_window 等窗口出现。\n\
      - 首次做界面操作前先 switch_mode {\"mode\":\"computer_use\"}。\n\
      - 需要隐藏主窗口时用 set_window_visibility {hidden:true}；任务结束、需要用户确认或出错时必须 set_window_visibility {hidden:false} 恢复。\n\
@@ -1194,7 +1195,8 @@ const COMPUTER_OPERATIONS_SECTION: &str = "\n## 计算机操作\n\
      - 能用 UI 自动化就优先用：ui_act {action:\"click\", name:\"保存\"} / ui_click / ui_drag 按控件名操作；拿不到控件时才用坐标。\n\
      - 鼠标：mouse_click {button:\"left\"|\"right\"|\"middle\", double:true}（双击）；滚轮 mouse_scroll {direction:\"up\"|\"down\", amount:N}。\n\
      - 键盘：keyboard_type 输入文字；keyboard_combo {keys:[\"ctrl\",\"s\"]} 发快捷键。\n\
-     - 坐标一律是屏幕物理像素：非 grid 截图可能被等比缩小，屏幕坐标 = 图片坐标 × (截图原始宽 / 图片宽)；工具输出里有原始尺寸/屏幕尺寸/scale，先换算再点。\n\
+     - 坐标自适应：screenshot 输出自带「坐标契约」（图像尺寸/屏幕尺寸/scale/锚点）。优先直接读 grid 网格刻度（=屏幕物理像素）；坐标若来自图片像素，鼠标工具传 coord_space:\"image\" 会自动乘 scale，不用手工换算。\n\
+     - 按 Tab 顺序操作：tab_scan 列出可 Tab 聚焦对象（index/name/control_type/rect），tab_act 用 index 执行 focus/click/enter/space/tab/shift_tab；能用控件名（ui_act）就优先用控件名。\n\
      - 动作后必须验证：再截图或用 ui_tree / ui_window_list 确认结果，不要连续盲点。\n\
      - 需要等窗口出现或页面加载时用 wait_for_window / wait，不要反复点击或重复输入。\n\
      - 后台任务/长时间操作前可以 set_window_visibility {hidden:true} 隐藏主窗口；任务完成前、需要用户确认或出错时必须 set_window_visibility {hidden:false} 恢复窗口。\n\
@@ -2044,8 +2046,10 @@ fn user_message_for(setup: &TurnSetup) -> ChatMessage {
 const VISION_PROMPT_PREFIX: &str = "（这是刚才截图的画面，可能已被等比缩小。";
 /// 视觉插入的用户消息文案：明确说明缩放与坐标换算，避免按图片坐标点偏。
 const VISION_PROMPT_TEXT: &str = "（这是刚才截图的画面，可能已被等比缩小。\
-点击/拖拽请用屏幕物理坐标：先看工具输出里的截图原始尺寸/屏幕尺寸/scale，\
-屏幕坐标 = 图片坐标 × (截图原始宽 / 图片宽)。\
+截图工具输出里有「坐标契约」：图像尺寸、屏幕尺寸、scale 与锚点示例。\
+优先用 grid 网格刻度（就是屏幕物理坐标）；若坐标是从图片像素估出来的，\
+给鼠标工具传 coord_space=\"image\" 会自动换算（屏幕坐标 = 图片坐标 × 截图原始宽/图片宽）。\
+需要按 Tab 遍历控件时用 tab_scan / tab_act。\
 能用 ui_act/ui_click 按控件名操作就优先用它，不要用坐标。）";
 /// 一轮里最多把几张工具图片喂给模型（控制 token）。
 const VISION_MAX_IMAGES_PER_TURN: usize = 3;
@@ -3827,7 +3831,7 @@ mod tests {
         assert!(prompt.contains("ui_act"));
         assert!(prompt.contains("keyboard_type"));
         assert!(prompt.contains("keyboard_combo"));
-        assert!(prompt.contains("屏幕坐标 = 图片坐标"));
+        assert!(prompt.contains("coord_space"));
         assert!(prompt.contains("## 文件与命令"));
         assert_eq!(count_section(&prompt, "## 计算机操作"), 1);
     }
