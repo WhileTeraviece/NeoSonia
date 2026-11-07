@@ -2186,7 +2186,14 @@ impl<A: App> ApplicationHandler<RunnerEvent> for AppRunner<A> {
             adapter.process_event(window, &event);
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // 交给 App 决定：默认退出；托盘应用可返回 false 隐藏到后台。
+                if self.app.on_close_requested() {
+                    event_loop.exit();
+                } else {
+                    self.dirty = true;
+                }
+            }
             WindowEvent::Resized(size) => {
                 // The cache key also guards size, but coalesced resizes can
                 // land back on the cached geometry mid-drag.

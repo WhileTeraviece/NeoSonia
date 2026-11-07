@@ -1,4 +1,4 @@
-/* NeoSonia 远程 SPA 的纯逻辑核心（可在 Node 里单测，不碰 DOM）。
+﻿/* NeoSonia 远程 SPA 的纯逻辑核心（可在 Node 里单测，不碰 DOM）。
  *
  * 被 app.js 通过 window.NeoSoniaCore 使用，也被 scripts/test-spa-core.cjs 单测。
  * 内容：重连退避 / 心跳判定 / 配对失败文案分类 / 配对码格式化。
@@ -92,7 +92,85 @@
     return text;
   }
 
+  // ============================================================
+  // 多 token 本地存储（v0.9.2）：一个浏览器可保存多个设备的配对令牌。
+  // 存储形状：[{token, device, savedAt}]，最新在前、按 token 去重、最多 8 个。
+  // ============================================================
+
+  var MAX_TOKENS = 8;
+
+  function normalizeTokenList(raw) {
+    var list = Array.isArray(raw) ? raw : [];
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < list.length && out.length < MAX_TOKENS; i++) {
+      var item = list[i];
+      var token = item && typeof item.token === 'string' ? item.token.trim() : '';
+      if (!token || seen[token]) continue;
+      seen[token] = true;
+      out.push({
+        token: token,
+        device: (item && item.device && typeof item.device === 'object') ? item.device : null,
+        savedAt: Number(item && item.savedAt) || 0
+      });
+    }
+    return out;
+  }
+
+  function makeTokenEntry(token, device, savedAt) {
+    token = String(token === undefined || token === null ? '' : token).trim();
+    if (!token) return null;
+    return {
+      token: token,
+      device: (device && typeof device === 'object') ? device : null,
+      savedAt: Number(savedAt) || 0
+    };
+  }
+
+  /// 旧单 token 键迁移：迁移后列表里只有这一项。
+  function migrateLegacyToken(legacyToken, legacyDevice, savedAt) {
+    var entry = makeTokenEntry(legacyToken, legacyDevice, savedAt);
+    return entry ? [entry] : [];
+  }
+
+  /// 配对成功/激活新 token：放到最前、去重、最多 8 个；**不动其它旧项**。
+  function addToken(list, token, device, savedAt) {
+    var normalized = normalizeTokenList(list);
+    var entry = makeTokenEntry(token, device, savedAt);
+    if (!entry) return normalized;
+    var rest = normalized.filter(function (item) { return item.token !== entry.token; });
+    rest.unshift(entry);
+    return rest.slice(0, MAX_TOKENS);
+  }
+
+  /// 只移除指定 token（失败/断开本设备），其它 token 原样保留。
+  function removeToken(list, token) {
+    var key = String(token === undefined || token === null ? '' : token).trim();
+    if (!key) return normalizeTokenList(list);
+    return normalizeTokenList(list).filter(function (item) { return item.token !== key; });
+  }
+
+  /// 更新某个 token 的设备信息（不改变顺序/不清空列表）。
+  function updateTokenDevice(list, token, device) {
+    var key = String(token || '').trim();
+    return normalizeTokenList(list).map(function (item) {
+      if (item.token !== key) return item;
+      return {
+        token: item.token,
+        device: (device && typeof device === 'object') ? device : item.device,
+        savedAt: item.savedAt
+      };
+    });
+  }
+
   return {
+    MAX_TOKENS: MAX_TOKENS,
+    normalizeTokenList: normalizeTokenList,
+    makeTokenEntry: makeTokenEntry,
+    migrateLegacyToken: migrateLegacyToken,
+    addToken: addToken,
+    removeToken: removeToken,
+    updateTokenDevice: updateTokenDevice,
     RECONNECT_STEPS: RECONNECT_STEPS,
     HEARTBEAT_INTERVAL_MS: HEARTBEAT_INTERVAL_MS,
     MAX_MISSED_PONGS: MAX_MISSED_PONGS,
@@ -108,3 +186,4 @@
     isWideLayout: isWideLayout
   };
 });
+

@@ -1,4 +1,4 @@
-//! The Elm-shaped application contract.
+﻿//! The Elm-shaped application contract.
 
 use crate::cmd::{Cmd, Sub};
 use crate::element::Element;
@@ -80,6 +80,14 @@ pub trait App {
     /// Store the proxy (or move clones into threads) to send later.
     fn init(&mut self, proxy: Proxy<Self::Msg>) {
         let _ = proxy;
+    }
+
+    /// Called when the OS asks to close the main window (title-bar X /
+    /// taskbar close / Alt+F4). Return `true` to let the runner exit the
+    /// event loop; return `false` to ignore the request (apps that hide to a
+    /// tray instead of quitting override this).
+    fn on_close_requested(&mut self) -> bool {
+        true
     }
 
     /// Applies one message to the state.

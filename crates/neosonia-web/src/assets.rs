@@ -465,6 +465,23 @@ mod tests {
     }
 
     #[test]
+    fn multi_token_storage_hooks_exist() {
+        // v0.9.2：多 token 存储（列表/迁移/只删失败项，禁止整体清空）。
+        assert!(APP_JS.contains("neosonia.tokens"), "缺少多 token 存储键");
+        assert!(APP_JS.contains("loadTokenList"), "缺少列表加载");
+        assert!(APP_JS.contains("validateTokens"), "缺少依次验证逻辑");
+        assert!(APP_JS.contains("removeCurrentTokenOnly"), "缺少只移除当前项");
+        assert!(APP_JS.contains("正在尝试其它已保存设备"), "缺少切换提示");
+        assert!(APP_JS.contains("tokenDebugList"), "缺少调试列表");
+        assert!(SPA_CORE_JS.contains("normalizeTokenList"));
+        assert!(SPA_CORE_JS.contains("migrateLegacyToken"));
+        assert!(SPA_CORE_JS.contains("addToken"));
+        assert!(SPA_CORE_JS.contains("removeToken"));
+        // 禁止把整个 tokens 列表直接删掉（只能按项移除）。
+        assert!(!APP_JS.contains("removeItem(TOKENS_KEY)"), "不应整体清空 token 列表");
+    }
+
+    #[test]
     fn no_emoji_in_assets() {
         // 零 emoji：检查常见 emoji 区段（代理对与符号区）。
         fn has_emoji(s: &str) -> bool {
@@ -486,6 +503,7 @@ mod tests {
         }
     }
 }
+
 
 
 

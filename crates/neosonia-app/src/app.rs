@@ -1243,7 +1243,14 @@ impl NeoSoniaApp {
                     }
                 }
                 // Ctrl+V 粘贴图片（文本粘贴由输入框原生处理，避免重复插入）
-                let ctrl_v = crate::hotkey::ctrl_down() && crate::hotkey::key_down(0x56);
+                // 只在前台 + 可见时接受 Ctrl+V：热键/键盘钩子是全局的，
+                // 不加判断会导致在别的窗口里粘贴图片时 NeoSonia 也吃一份。
+                let paste_allowed = self.st.window_visible
+                    && !self.st.window_hidden_by_agent
+                    && crate::win::is_own_window_foreground();
+                let ctrl_v = paste_allowed
+                    && crate::hotkey::ctrl_down()
+                    && crate::hotkey::key_down(0x56);
                 if ctrl_v && !self.st.paste_armed {
                     self.st.paste_armed = true;
                     self.paste_clipboard_media();
@@ -1830,6 +1837,10 @@ impl NeoSoniaApp {
             }
 
             // ---------------- 对话历史 ----------------
+            Msg::HistoryToggleExpanded => {
+                self.st.history.expanded = !self.st.history.expanded;
+                self.st.dirty = true;
+            }
             Msg::HistoryToggle => {
                 // 用户要求：不在对话页点历史按钮也要生效——统一先切回对话页，再切换历史面板。
                 if self.st.page != NavPage::Chat {
@@ -2177,6 +2188,13 @@ impl App for NeoSoniaApp {
 
     fn init(&mut self, proxy: Proxy<Msg>) {
         self.boot(proxy);
+    }
+
+    /// 点任务栏关闭/标题栏 X 不退出进程：隐藏到后台（托盘 + Alt+Space 可唤回）。
+    /// 真正退出走托盘菜单「退出」或 Msg::Quit。
+    fn on_close_requested(&mut self) -> bool {
+        self.hide_window();
+        false
     }
 
     fn update(&mut self, msg: Msg) {

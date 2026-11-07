@@ -742,3 +742,10 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
 - 现象：1.0.0 安装到测试目录后，`Uninstall.exe` 被 Kaspersky 实时防护锁定（复制/读取/启动均 sharing violation），约一分钟后文件被隔离删除；Setup 解压该文件时也被拦，导致卸载缺失。
 - 修复：卸载改由 `neosonia.exe --uninstall [--silent]` 执行（删注册表/快捷方式 + 分离 cmd 延迟 rmdir），安装包不再包含 `Uninstall.exe`；Setup 升级安装时会清理旧版残留的 `Uninstall.exe`。
 - 待复测：安装 → `neosonia.exe --uninstall --silent` → 目录/注册表/快捷方式全部清理。
+## v1.0.1 待验收改动（暂不发布）
+
+- **粘贴只在前台生效**：全局 Ctrl+V 轮询增加 `window_visible && 未隐藏 && is_own_window_foreground()`（win.rs 新增前台进程判断），在其它窗口粘贴图片/文件不再被 NeoSonia 吃掉。
+- **历史页会话折叠**：会话超过 3 条默认只显示前 3 条 +「展开全部（N 条）」；展开后底部「收起，只显示最近 3 条」（`state.history.expanded` + `Msg::HistoryToggleExpanded`，id `history-expand`）。截图 `logs/ui/history-collapsed.png`。
+- **日常内容先切回 daily 模式**：system prompt 的「模式切换（硬性要求）」新增：天气/日程/生活常识/闲聊/新闻等日常内容必须先 `switch_mode {"mode":"daily"}` 再回答；coding/computer_use 段落再强调。单测 `non_daily_modes_require_switching_back_for_daily_content`。
+- **关闭按钮转后台**：fenestra-core `App::on_close_requested()` 默认 true；shell 主窗口 CloseRequested 走该回调；NeoSoniaApp 返回 false 并 `hide_window()`。真机验证：点关闭后窗口 `IsWindowVisible=false`、进程存活，Alt+Space 可重新显示。
+- **网页端多 token 存储**：SPA `localStorage['neosonia.tokens']` 列表（去重、最多 8、旧键自动迁移）；逐个验证，401 只移除失败项；全部失效保留列表；配对/断开只影响当前项。截图 `logs/screenshot-web-multitoken-app.png` / `_pair.png`；Node spa-core 22 passed，web 100 passed（注意 `devices::tests::name_and_ua_are_sanitized` 偶发因临时目录/安全软件占用报 os error 5，重跑通过）。

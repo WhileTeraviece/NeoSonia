@@ -1,4 +1,4 @@
-//! 历史面板：会话列表 + 消息命中 + 新建/删除。
+﻿//! 历史面板：会话列表 + 消息命中 + 新建/删除。
 //!
 //! 数据来自 `AppState::history`（Lead 的 `HistoryState`）；所有动作通过
 //! `Msg::History*` 交给主循环，`view` 里不做 IO。
@@ -351,8 +351,33 @@ pub fn view(st: &AppState, c: &UiColors) -> Element<Msg> {
             icons::lucide::clock().w(20.0).h(20.0).color(c.text_subtle),
         ));
     } else {
-        let cards: Vec<Element<Msg>> = h.sessions.iter().map(|s| session_card(st, c, s)).collect();
-        children.push(col().w_full().gap(space::SM).children(cards));
+        // 会话超过 3 条默认折叠：只显示前 3 条 + 展开/收起按钮，避免历史页太长。
+        const COLLAPSED_LIMIT: usize = 3;
+        let total = h.sessions.len();
+        let show_all = h.expanded || total <= COLLAPSED_LIMIT;
+        let visible: Vec<Element<Msg>> = h
+            .sessions
+            .iter()
+            .take(if show_all { total } else { COLLAPSED_LIMIT })
+            .map(|s| session_card(st, c, s))
+            .collect();
+        let mut list = col().w_full().gap(space::SM).children(visible);
+        if total > COLLAPSED_LIMIT {
+            let label = if show_all {
+                "收起，只显示最近 3 条".to_string()
+            } else {
+                format!("展开全部（{total} 条）")
+            };
+            let toggle: Element<Msg> = button(label)
+                .variant(ButtonVariant::Ghost)
+                .size(ControlSize::Sm)
+                .on_click(Msg::HistoryToggleExpanded)
+                .id("history-expand")
+                .into();
+            let row: Element<Msg> = row().w_full().justify_center().children((toggle,)).into();
+            list = list.children((row,));
+        }
+        children.push(list);
     }
 
     // 消息命中

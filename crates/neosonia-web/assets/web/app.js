@@ -11,8 +11,9 @@
 (function () {
   'use strict';
 
-  var TOKEN_KEY = 'neosonia.token';
-  var DEVICE_KEY = 'neosonia.device';
+  var TOKEN_KEY = 'neosonia.token';       // 旧版单 token（启动时迁移）
+  var DEVICE_KEY = 'neosonia.device';     // 旧版单设备信息（启动时迁移）
+  var TOKENS_KEY = 'neosonia.tokens';     // v0.9.2：多 token 列表 [{token, device, savedAt}]
   var MAX_RENDERED = 200;   // 首屏最多渲染多少条消息
   var PAGE_SIZE = 100;      // 「加载更早」一页多少条
   var STREAM_FRAME_MS = 33; // 流式渲染合批上限（约 30fps）
@@ -65,6 +66,8 @@
 
   var state = {
     token: '',
+    tokenEntry: null,
+    authSwitching: false,
     device: null,
     server: null,
     mode: '',
@@ -211,21 +214,87 @@
     }
   }
 
-  /* ================= 本地存储 ================= */
+  /* ================= 本地存储（多 token，v0.9.2） =================
+   *
+   * localStorage['neosonia.tokens'] = [{token, device, savedAt}]（最新在前、去重、最多 8）。
+   * 某个 token 失效只移除它自己，**绝不清空整个列表**；全部失效时也保留列表备复用。
+   */
 
   function loadToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; } }
-  function saveToken(t) { try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {} }
   function loadDevice() {
     try {
       var raw = localStorage.getItem(DEVICE_KEY);
       return raw ? JSON.parse(raw) : null;
     } catch (e) { return null; }
   }
-  function saveDevice(d) { try { localStorage.setItem(DEVICE_KEY, JSON.stringify(d || {})); } catch (e) {} }
+
+  function readStoredTokens() {
+    try {
+      var raw = localStorage.getItem(TOKENS_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+
+  /// 保存列表（规范化后写回），并清理旧单 token 键（迁移完成）。
+  function saveTokenList(list) {
+    var normalized = core.normalizeTokenList(list);
+    try { localStorage.setItem(TOKENS_KEY, JSON.stringify(normalized)); } catch (e) {}
+    try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(DEVICE_KEY); } catch (e) {}
+    return normalized;
+  }
+
+  /// 读取多 token 列表；旧单 token 键自动迁移成第一项后删除旧键。
+  function loadTokenList() {
+    var list = core.normalizeTokenList(readStoredTokens());
+    var legacyToken = loadToken();
+    var legacyDevice = loadDevice();
+    if (!list.length && legacyToken) {
+      list = core.migrateLegacyToken(legacyToken, legacyDevice, Date.now());
+      return saveTokenList(list);
+    }
+    if (legacyToken || legacyDevice) saveTokenList(list);
+    return list;
+  }
+
+  function activateTokenEntry(entry) {
+    state.token = entry && entry.token ? entry.token : '';
+    state.device = entry && entry.device ? entry.device : null;
+    state.tokenEntry = entry || null;
+  }
+
+  function updateStoredDevice(entry, device) {
+    if (!entry || !entry.token) return;
+    var list = core.updateTokenDevice(loadTokenList(), entry.token, device);
+    saveTokenList(list);
+  }
+
+  function saveDevice(d) {
+    state.device = d || state.device;
+    try {
+      if (state.token) updateStoredDevice(state.tokenEntry || { token: state.token }, state.device);
+      else localStorage.setItem(DEVICE_KEY, JSON.stringify(state.device || {}));
+    } catch (e) {}
+  }
+
+  /// 只从列表移除当前 token（401/断开本设备），其它 token 原样保留。
+  function removeCurrentTokenOnly() {
+    var list = core.removeToken(loadTokenList(), state.token);
+    return saveTokenList(list);
+  }
+
+  /// 兼容旧调用名：只清当前项 + 当前内存状态，不清整个列表。
   function clearAuth() {
+    removeCurrentTokenOnly();
     state.token = '';
     state.device = null;
-    try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(DEVICE_KEY); } catch (e) {}
+    state.tokenEntry = null;
+  }
+
+  /// 整个列表的调试视图（截图/排查用，只读）。
+  function tokenDebugList() {
+    return loadTokenList().map(function (item) {
+      return { token: String(item.token).slice(0, 8) + '…', device: item.device, savedAt: item.savedAt };
+    });
   }
 
   // 仅测试用：sessionStorage 里放 neosonia.debug.offline=1 可模拟 WS 连不上，
@@ -272,12 +341,84 @@
     });
   }
 
+  /// 切换 token 前清理会话相关状态（token 列表不动）。
+  function resetForTokenSwitch() {
+    state.current = '';
+    state.currentTitle = '';
+    state.sessions = [];
+    state.msgData = [];
+    state.unread = {};
+    state.pendingUserText = null;
+    state.autoOpenedOnce = false;
+    state.msgHasEarlier = false;
+    state.review.items = [];
+    state.connState = 'offline';
+    updateTitleUnread();
+  }
+
+  /// 依次验证 token：第一个 200 的成为当前；401 只移除该项；全部失败不改动列表。
+  function validateTokens(list, onResult) {
+    var failed = [];
+    var index = 0;
+    function step() {
+      if (index >= list.length) {
+        onResult({ ok: false, failed: failed });
+        return;
+      }
+      var entry = list[index++];
+      activateTokenEntry(entry);
+      api('/api/me', { skipAuthRedirect: true }).then(function (data) {
+        if (data && data.device) {
+          state.device = data.device;
+          entry.device = data.device;
+          updateStoredDevice(entry, data.device);
+        }
+        if (failed.length) {
+          // 只把验证失败的项移除，其它（含成功项/尚未验证项）保留。
+          var current = loadTokenList();
+          failed.forEach(function (t) { current = core.removeToken(current, t.token); });
+          current = core.updateTokenDevice(current, entry.token, entry.device);
+          saveTokenList(current);
+        }
+        onResult({ ok: true, entry: entry });
+      }).catch(function (err) {
+        if (err && err.status === 401) {
+          failed.push(entry);
+          step();
+          return;
+        }
+        // 网络/服务异常：保留列表，不误删 token。
+        onResult({ ok: false, network: !!(err && err.network), err: err, failed: failed });
+      });
+    }
+    step();
+  }
+
   function handleUnauthorized() {
-    if (state.view === 'pair') return;
-    clearAuth();
+    if (state.view === 'pair' || state.authSwitching) return;
+    state.authSwitching = true;
     stopHeartbeat();
     disconnectWs();
-    showPairView('设备授权已失效，请在桌面端查看新配对码。');
+    // 只移除当前失效 token，其它 token 保留。
+    removeCurrentTokenOnly();
+    state.token = '';
+    state.device = null;
+    state.tokenEntry = null;
+    resetForTokenSwitch();
+    var list = loadTokenList();
+    if (!list.length) {
+      state.authSwitching = false;
+      showPairView('设备授权已失效，请在桌面端查看新配对码。');
+      return;
+    }
+    $('boot').textContent = '设备授权已失效，正在尝试其它已保存设备…';
+    show($('boot'), true);
+    validateTokens(list, function (result) {
+      state.authSwitching = false;
+      if (result.ok) { show($('boot'), false); enterApp(); return; }
+      if (result.network) { enterAppOffline(result.err); return; }
+      showPairView('设备授权已失效，请在桌面端查看新配对码。');
+    });
   }
 
   /* ================= 视图切换 / 错误态 ================= */
@@ -376,10 +517,12 @@
       pairFailed(new Error('配对响应缺少 token。'));
       return;
     }
-    state.token = data.token;
+    var now = Date.now();
+    state.tokenEntry = core.makeTokenEntry(data.token, data.device || null, now);
+    state.token = state.tokenEntry.token;
     state.device = data.device || null;
-    saveToken(data.token);
-    saveDevice(state.device);
+    // 配对成功：把新 token 放到列表最前（去重、最多 8），旧 token 全部保留。
+    saveTokenList(core.addToken(loadTokenList(), data.token, state.device, now));
     try { history.replaceState(null, '', '/'); } catch (e) { location.hash = ''; }
     show($('pair-auto'), false);
     showPairError('');
@@ -422,7 +565,11 @@
 
   function unpair() {
     if (!window.confirm('断开本设备？之后需要重新输入配对码才能连接。')) return;
-    clearAuth();
+    // 只移除当前 token 项，其它已保存设备保留。
+    removeCurrentTokenOnly();
+    state.token = '';
+    state.device = null;
+    state.tokenEntry = null;
     stopHeartbeat();
     disconnectWs();
     state.sessions = [];
@@ -2235,8 +2382,7 @@
   function boot() {
     messagesEl = $('messages');
     recordFirstPaint();
-    state.token = loadToken();
-    state.device = loadDevice();
+    var savedTokens = loadTokenList();
     bind();
 
     var hash = '';
@@ -2250,34 +2396,37 @@
     var isLoopback = hostLower === '127.0.0.1' || hostLower === 'localhost' || hostLower === '::1' || hostLower === '[::1]';
     show($('pair-loopback-warn'), isLoopback);
 
-    if (state.token) {
-      // 已有 token：先验证有效性，有效直接进 app（即使当前在 /pair 页面）。
+    if (savedTokens.length) {
+      // 依次验证已保存的 token：第一个通过的进 app；401 只移除该项；全部失败保留列表。
       $('boot').textContent = '正在验证设备授权…';
       show($('boot'), true);
-      api('/api/me', { skipAuthRedirect: true }).then(function (data) {
-        if (data && data.device) { state.device = data.device; saveDevice(data.device); }
-        enterApp();
-      }).catch(function (err) {
-        var status = err && typeof err.status === 'number' ? err.status : 0;
-        if (status === 401) {
-          clearAuth();
+      validateTokens(savedTokens, function (result) {
+        if (result.ok) {
+          show($('boot'), false);
+          enterApp();
+          return;
+        }
+        if (result.network) {
           if (code) {
-            showPairView('设备授权已失效，请在桌面端查看新配对码。');
-            state.autoOpenedOnce = false;
-            show($('pair-auto'), false);
+            // 网络问题但带了新配对码：先尝试直接配对。
+            showPairView('');
             $('pair-name').value = DEFAULT_DEVICE_NAME;
             autoPair(code);
           } else {
-            showPairView('设备授权已失效，请在桌面端查看新配对码。');
-            state.autoPairStarted = false;
+            enterAppOffline(result.err);
           }
-        } else if (code) {
-          // 网络问题但带了新配对码：先尝试直接配对。
-          showPairView('');
+          return;
+        }
+        // 全部 token 都失效：进入配对页，但**保留**整个列表。
+        if (code) {
+          showPairView('设备授权已失效，请在桌面端查看新配对码。');
+          state.autoOpenedOnce = false;
+          show($('pair-auto'), false);
           $('pair-name').value = DEFAULT_DEVICE_NAME;
           autoPair(code);
         } else {
-          enterAppOffline(err);
+          showPairView('设备授权已失效，请在桌面端查看新配对码。');
+          state.autoPairStarted = false;
         }
       });
       return;
@@ -2302,7 +2451,11 @@
     clearOffline: function () {
       try { sessionStorage.removeItem('neosonia.debug.offline'); } catch (e) {}
     },
-    perf: function () { return window.__neosoniaPerf; }
+    perf: function () { return window.__neosoniaPerf; },
+    // v0.9.2 多 token 排查/截图：只读列表（token 已脱敏）+ 原始列表 + 单 token 移除。
+    tokens: function () { return tokenDebugList(); },
+    rawTokens: function () { return loadTokenList(); },
+    removeToken: function (token) { return saveTokenList(core.removeToken(loadTokenList(), token)); }
   };
 
   if (document.readyState === 'loading') {
@@ -2311,6 +2464,9 @@
     boot();
   }
 })();
+
+
+
 
 
 

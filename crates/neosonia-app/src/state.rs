@@ -350,6 +350,7 @@ pub enum Msg {
     HistoryQueryChanged(String),
     HistorySearch,
     HistoryLoaded(Vec<neosonia_core::ConversationSummary>),
+    HistoryToggleExpanded,
     HistoryHits(Vec<neosonia_core::ConversationHit>),
     HistorySelect(String),
     HistoryDelete(String),
@@ -582,6 +583,8 @@ pub struct HistoryState {
     pub active_id: Option<String>,
     /// 当前会话 id（引擎首轮落库后回填）。
     pub current_id: Option<String>,
+    /// 会话列表是否展开（超过 3 条默认折叠为前 3 条）。
+    pub expanded: bool,
 }
 
 /// 局域网设备页状态。

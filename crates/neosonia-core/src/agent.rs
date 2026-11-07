@@ -1,4 +1,4 @@
-//! Agent 循环引擎：接收用户消息，跑「模型 → 工具 → 模型」直到收敛。
+﻿//! Agent 循环引擎：接收用户消息，跑「模型 → 工具 → 模型」直到收敛。
 //!
 //! 结构：
 //! - [`AgentEngine`]：app 持有的句柄，线程安全，提交/取消/配置；
@@ -1037,6 +1037,7 @@ impl EngineCore {
             "\n## 模式切换（硬性要求）\n\
              - 写代码/改代码前，必须先调用 switch_mode {\"mode\":\"coding\"}，再动手改；不要停留在 daily 模式直接改代码。\n\
              - 要做界面操作、截图、鼠标键盘、UIA/CDP 或窗口相关操作前，必须先调用 switch_mode {\"mode\":\"computer_use\"}。\n\
+             - **用户问天气、日程、生活常识、闲聊、新闻/资讯等日常内容时：必须先 switch_mode {\"mode\":\"daily\"} 切回日常模式，再回答；禁止在 coding/computer_use 模式下直接回答日常问题。**\n\
              - 任务完成或回到普通问答时，可以 switch_mode {\"mode\":\"daily\"} 切回日常模式。\n",
         );
 
@@ -1105,10 +1106,18 @@ impl EngineCore {
                      - 改完后可以 switch_mode {\"mode\":\"computer_use\"}，用真实界面跑一遍验证效果，再切回 coding/daily。\n",
                 );
                 prompt.push_str(FILES_AND_COMMANDS_SECTION);
+                prompt.push_str(
+                    "\n## 日常问题\n\
+                     - 遇到天气、日程、生活常识、闲聊、新闻等日常内容：先 switch_mode {\"mode\":\"daily\"}，再回答。\n",
+                );
             }
             AgentMode::ComputerUse => {
                 prompt.push_str(FILES_AND_COMMANDS_SECTION);
                 prompt.push_str(COMPUTER_OPERATIONS_SECTION);
+                prompt.push_str(
+                    "\n## 日常问题\n\
+                     - 遇到天气、日程、生活常识、闲聊、新闻等日常内容：先 switch_mode {\"mode\":\"daily\"}，再回答。\n",
+                );
             }
         }
 
@@ -3794,6 +3803,21 @@ mod tests {
 
     fn count_section(prompt: &str, header: &str) -> usize {
         prompt.matches(header).count()
+    }
+
+    #[test]
+    fn non_daily_modes_require_switching_back_for_daily_content() {
+        // 用户要求：天气/日程/生活常识等日常内容必须先切回 daily 再回答。
+        for mode in [AgentMode::Coding, AgentMode::ComputerUse] {
+            let prompt = test_prompt_with(mode, false);
+            assert!(
+                prompt.contains("必须先 switch_mode") && prompt.contains("日常内容"),
+                "{} 模式应要求日常内容先切回 daily",
+                mode.id()
+            );
+        }
+        let daily = test_prompt_with(AgentMode::Daily, false);
+        assert!(!daily.contains("## 日常问题"), "daily 模式不需要切回提示");
     }
 
     #[test]
