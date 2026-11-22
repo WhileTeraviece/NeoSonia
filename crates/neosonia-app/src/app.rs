@@ -1263,6 +1263,7 @@ impl NeoSoniaApp {
                 }
                 // 本地索引运行态：每 5 秒刷新一次（设置页摘要显示"已索引 N 条"）
                 if self.tick_count % 20 == 0
+                    && self.st.page == NavPage::Settings
                     && self.st.settings.index.enabled
                     && let Some(b) = &self.bridge
                 {
@@ -2198,9 +2199,14 @@ impl App for NeoSoniaApp {
     }
 
     fn update(&mut self, msg: Msg) {
+        let started = std::time::Instant::now();
         // 用户反馈"执行操作时有时崩溃"：把单条消息处理包起来，
         // 某个面板/工具事件里的 panic 不应该让整个应用退出。
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.handle(msg)));
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        if ms > 1500.0 {
+            tracing::warn!(ms = format!("{ms:.1}"), "ui message slow（界面线程卡顿）");
+        }
         if result.is_err() {
             tracing::error!("处理 UI 消息时 panic（已捕获，应用继续运行）");
             self.st.push_notice(
@@ -2224,8 +2230,16 @@ impl App for NeoSoniaApp {
     }
 
     fn view(&self) -> Element<Msg> {
+        let started = std::time::Instant::now();
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.build_view())) {
-            Ok(el) => el,
+            // 视图构建慢同样记录（长文本/大列表可能拖慢界面）。
+            Ok(el) => {
+                let ms = started.elapsed().as_secs_f64() * 1000.0;
+                if ms > 1500.0 {
+                    tracing::warn!(ms = format!("{ms:.1}"), "view build slow（视图构建卡顿）");
+                }
+                el
+            }
             Err(_) => {
                 tracing::error!("构建视图时 panic（已捕获），显示降级界面");
                 let c = self.colors();

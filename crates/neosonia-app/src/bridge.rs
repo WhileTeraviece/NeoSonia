@@ -656,11 +656,10 @@ impl Bridge {
 
     /// 本地索引运行态（设置页摘要用；SQLite 查询很快，但只在 Tick 里周期调用）。
     pub fn index_stats(&self) -> (u64, bool) {
+        // UI 线程每 5 秒调用一次：只能读原子缓存，不能查 SQLite
+        //（索引扫描持写锁时查询会把界面线程卡住，长扫描 = 界面卡死）。
         let idx = neosonia_tools::index::FileIndex::global(&self.paths);
-        match idx.stats() {
-            Ok(s) => (s.total_entries, s.scanning),
-            Err(_) => (0, false),
-        }
+        idx.quick_stats()
     }
 
     /// 审查弹窗的决定：允许 / 拒绝 / 拒绝并 1 天内拒绝同类。

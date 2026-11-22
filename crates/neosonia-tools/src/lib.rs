@@ -12,6 +12,7 @@ mod macros;
 
 // uia / cdp 由 automation 队友实现；index 由 mail 队友实现。本文件负责声明并注册。
 pub mod cdp;
+pub mod deepseek_files;
 pub mod fs;
 pub mod index;
 pub mod input;
@@ -106,6 +107,8 @@ pub fn register_all(reg: &ToolRegistry, settings: &Settings) {
     register_fs(reg);
     register_system(reg);
     register_web(reg);
+    // DeepSeek 官方文件解析/OCR/文档问答：仅官方端点 + 有 API Key 时注册。
+    deepseek_files::register_if_available(reg, settings);
     // 即时存档不依赖 shell/input 设置，无条件注册（备份区只读防护需要它始终可用）。
     snapshot::register(reg);
 
@@ -153,6 +156,7 @@ pub fn tool_catalog() -> Vec<ToolSpec> {
     cdp::register(&reg);
     index::register(&reg);
     snapshot::register(&reg);
+    deepseek_files::register(&reg);
     reg.specs()
 }
 
@@ -465,7 +469,8 @@ mod tests {
     fn catalog_has_all_contract_tools() {
         let names: Vec<String> = tool_catalog().iter().map(|s| s.name.clone()).collect();
         println!("tool_catalog 工具数：{} => {:?}", names.len(), names);
-        assert!(names.len() >= 53, "工具数偏少: {}", names.len());
+        // 全量 catalog 含 DeepSeek 文件解析/OCR/文档问答；当前应为 78（其他队友可能继续加，故用 >=）
+        assert!(names.len() >= 78, "工具数偏少: {}", names.len());
         for expected in [
             "read_file",
             "write_file",
@@ -526,6 +531,10 @@ mod tests {
             "window_is_hidden",
             "background_task",
             "background_task_status",
+            // DeepSeek 文件解析 / OCR / 文档问答（catalog 无条件包含）
+            "deepseek_file_upload",
+            "deepseek_ocr",
+            "deepseek_document_qa",
         ] {
             assert!(names.iter().any(|n| n == expected), "缺少工具: {expected}");
         }
@@ -649,6 +658,44 @@ mod tests {
         assert!(reg3.names().iter().any(|n| n == "wait_for_window"));
         assert!(reg3.names().iter().any(|n| n == "job_status"));
         assert!(reg3.names().iter().any(|n| n == "mouse_scroll"));
+        // DeepSeek 文件解析/OCR 工具默认不注册（没有 API Key）；
+        // 如果本机环境变量里正好配置了 DEEPSEEK_API_KEY，则跳过“不存在”断言。
+        let env_has_deepseek_key = ["NEOSONIA_API_KEY", "DEEPSEEK_API_KEY"]
+            .iter()
+            .any(|name| {
+                std::env::var(name)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+            });
+        if !env_has_deepseek_key {
+            assert!(!names.iter().any(|n| n == "deepseek_file_upload"));
+            assert!(!reg3.names().iter().any(|n| n == "deepseek_ocr"));
+        }
+
+        // 官方端点 + API Key → 注册 3 个
+        let mut with_key = Settings::default();
+        with_key.server.api_key = "sk-test".to_string();
+        let reg4 = ToolRegistry::new();
+        register_all(&reg4, &with_key);
+        for expected in [
+            "deepseek_file_upload",
+            "deepseek_ocr",
+            "deepseek_document_qa",
+        ] {
+            assert!(
+                reg4.names().iter().any(|n| n == expected),
+                "官方端点 + key 时应注册 {expected}"
+            );
+        }
+        // 非 DeepSeek 端点即使有 key 也不注册
+        let mut other_endpoint = with_key.clone();
+        other_endpoint.server.base_url = "https://api.openai.com/v1".to_string();
+        let reg5 = ToolRegistry::new();
+        register_all(&reg5, &other_endpoint);
+        assert!(!reg5
+            .names()
+            .iter()
+            .any(|n| n == "deepseek_file_upload"));
     }
 
     #[test]

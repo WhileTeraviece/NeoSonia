@@ -1,4 +1,4 @@
-//! 类 Everything 的本地文件名索引（SQLite）。
+﻿//! 类 Everything 的本地文件名索引（SQLite）。
 //!
 //! 设计要点：
 //! - 索引库放在 `Paths.file_index_db`（`data/file_index.sqlite3`），单连接 +
@@ -180,6 +180,8 @@ pub struct FileIndex {
     progress_scanned: AtomicU64,
     progress_started_ms: AtomicI64,
     last_scan: Mutex<Option<ScanStats>>,
+    /// 缓存的条目总数：UI 线程只读这个原子量，绝不在主线程查 SQLite（扫描写锁会把界面卡住）。
+    cached_total: AtomicU64,
     /// 同一时间只允许一个扫描（后台线程与手动 reindex 互斥）。
     scan_lock: Mutex<()>,
     bg_started: AtomicBool,
@@ -203,7 +205,7 @@ impl FileIndex {
                 }
             }
         };
-        Self {
+        let mut index = Self {
             conn: Mutex::new(conn),
             db_path: path,
             degraded: AtomicBool::new(degraded),
@@ -211,9 +213,17 @@ impl FileIndex {
             progress_scanned: AtomicU64::new(0),
             progress_started_ms: AtomicI64::new(0),
             last_scan: Mutex::new(None),
+            cached_total: AtomicU64::new(0),
             scan_lock: Mutex::new(()),
             bg_started: AtomicBool::new(false),
+        };
+        if let Ok(total) = index.with_conn(|conn| {
+            let total: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
+            Ok(total.max(0) as u64)
+        }) {
+            index.cached_total.store(total, Ordering::SeqCst);
         }
+        index
     }
 
     /// 进程内全局唯一实例（用 `Paths.file_index_db`）。打开失败也不会 panic。
@@ -306,6 +316,14 @@ impl FileIndex {
             Ok(stats) => {
                 self.progress_scanned.store(stats.entries, Ordering::SeqCst);
                 *self.last_scan.lock() = Some(stats.clone());
+                // 在扫描线程里顺手缓存总条数，供 UI 线程无锁读取。
+                if let Ok(total) = self.with_conn(|conn| {
+                    let total: i64 =
+                        conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
+                    Ok(total.max(0) as u64)
+                }) {
+                    self.cached_total.store(total, Ordering::SeqCst);
+                }
                 Ok(stats)
             }
             Err(e) => Err(e),
@@ -452,6 +470,7 @@ impl FileIndex {
                 }
             }
             let _ = conn.execute("DELETE FROM scan_seen", []);
+            self.cached_total.store(0, Ordering::SeqCst);
             Ok(())
         })?;
 
@@ -647,6 +666,14 @@ impl FileIndex {
         })
     }
 
+    /// UI 线程用的无锁统计：只读原子量，不碰 SQLite（避免被扫描写锁卡住界面）。
+    pub fn quick_stats(&self) -> (u64, bool) {
+        (
+            self.cached_total.load(Ordering::SeqCst),
+            self.busy.load(Ordering::SeqCst),
+        )
+    }
+
     pub fn last_scan(&self) -> Option<ScanStats> {
         self.last_scan.lock().clone()
     }
@@ -656,6 +683,7 @@ impl FileIndex {
         self.with_conn(|conn| {
             conn.execute("DELETE FROM files", [])?;
             let _ = conn.execute("DELETE FROM scan_seen", []);
+            self.cached_total.store(0, Ordering::SeqCst);
             Ok(())
         })?;
         *self.last_scan.lock() = None;

@@ -765,3 +765,20 @@ app **70 passed**、shell **18 passed**（含 dragdrop）、core 130、mail 107�
 - 鼠标工具（mouse_move/click/drag/drag_path/click_sequence/press/release）新增 `coord_space:"screen"|"image"`：传 image 时自动按最近一次截图契约换算（10 分钟内有效；未截图/过期有中文错误；与 logical=true 冲突报错），输出回显「图片(600,400) → 屏幕(1500,1000)」。
 - 实测截图 `sandbox/data/screenshots/shot-20261107-122037-b070f071.png`：1600×900 图、scale 2.4，右下角图例可读；agent 实测 coord_space="image" 换算与光标位置一致。
 - 工具目录 75 个；tools 测试 166 passed / 23 ignored。
+
+## v1.0.2 待验收改动（2026-11-22）
+
+### DeepSeek 文件解析 / OCR（新增工具）
+- 官方文档：https://api-docs.deepseek.com/zh-cn/guides/document_parsing 、 https://api-docs.deepseek.com/zh-cn/guides/ocr
+- 仅当 `server.base_url` 为 DeepSeek 官方端点（含默认空值）且能解析到 API Key（settings 或 `env:`/`${}`/`NEOSONIA_API_KEY`/`DEEPSEEK_API_KEY`）时注册：
+  - `deepseek_file_upload {path, purpose?, expires_seconds?}` → `POST /files`（purpose 必须在 file 前），返回 file_id；
+  - `deepseek_ocr {path, purpose?, max_pages?}` → `POST /v1/tools/ocr`，按页返回文字（保留 `<｜ref｜>/<｜box｜>` 标记；响应前导换行已 trim；error 对象转中文错误）；
+  - `deepseek_document_qa {file_id(s), question, model?}` → `POST /v1/chat/completions`，content 中引用 `{"type":"file","file_id":...}`（最多 20 个），模型默认 deepseek-flash。
+- 工具目录 78 个。
+- 真机联调（截图 `logs/ui/deepseek-tools-test.png`）：OCR 识别测试图得到「7391 / 紫色主题」；上传 txt 得到 `file-api-...`；document_qa 回答「验证码是 7391，主题色是紫色。」，total_tokens=132。
+
+### 人设编辑页长时间停留卡顿/卡死（疑似根因修复）
+- 现象：旧版主线程 CPU 长期 0.6–0.7 核（600s 内主线程 405s），长时停留后界面卡死/无响应。
+- 根因：`Msg::Tick` 每 5 秒在 **UI 主线程**调用 `FileIndex::stats()`，而它会对 13.6 万条的 SQLite `files` 表做 `COUNT + SUM` 查询；索引后台扫描持写锁时，主线程被迫等待/消耗 CPU（扫描单次最长 90s），页面停留越久越容易碰上 → 卡死。
+- 修复：`FileIndex` 新增 `cached_total: AtomicU64`，扫描线程结束后缓存总条数；新增无锁 `quick_stats()`；`Bridge::index_stats()` 改用它；且仅在「设置」页才刷新索引统计。另加 UI 卡顿看门狗：单条消息处理或视图构建 >1500ms 写 WARN 日志（便于以后定位）。
+- 实测（debug 版、真实 13.6 万条索引数据）：主线程 CPU 由 405s/600s ≈ 67% 降到 18.8s/125s ≈ 15%（debug；release 更低），界面保持响应。
